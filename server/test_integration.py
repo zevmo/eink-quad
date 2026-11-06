@@ -326,7 +326,7 @@ class FramesAndNight(unittest.TestCase):
             calls["n"] += 1
             return {"fox": list(news["fox"]), "tech": list(news["tech"])}
 
-        def same_sports(cfg, force=False):
+        def same_sports(cfg, force=False, ttl=3500):
             return_row = row
             calls["s"] += 1
             return [return_row]
@@ -350,7 +350,7 @@ class FramesAndNight(unittest.TestCase):
             def boom_news(force=False):
                 raise RuntimeError("fox down")
 
-            def boom_sports(cfg, force=False):
+            def boom_sports(cfg, force=False, ttl=3500):
                 raise RuntimeError("espn down")
 
             lower.fetch_news, lower.fetch_favorites = boom_news, boom_sports
@@ -379,7 +379,7 @@ class FramesAndNight(unittest.TestCase):
                                  completed_at=now - 3600, completed_source="espn", event_id="jf2"))
         app.board.snap = {"teams": [row], "lower_news": {"fox": [], "tech": []}}
 
-        def changed(cfg, force=False):
+        def changed(cfg, force=False, ttl=3500):
             return [row]
 
         old_s, old_n = lower.fetch_favorites, lower.fetch_news
@@ -448,6 +448,42 @@ class FramesAndNight(unittest.TestCase):
         self.assertIn("weather", got)
         self.assertIn("news", got)
         self.assertNotIn("sports", got)
+        self.assertNotIn("calendar", got)
+
+    def test_live_scores_poll_every_15_minutes(self):
+        import lower
+        import power
+        app = self.app
+        self._use(layout="lower", e1001_home="lower", cadence="windows")
+        t0 = (int(time.time()) // power.LIVE_POLL_S) * power.LIVE_POLL_S + 30
+        row = Row("jets", live=G("in", t0 - 1000, 10, 7, "Q2 8:00", "BUF"))
+        app.board.snap = {"teams": [row], "lower_news": {"fox": [], "tech": []},
+                          "lower_sig": power.content_signature([row], t0, [], []),
+                          "lower_asof": t0 - 100}
+        app.board.beats = {}
+        calls = {"s": 0}
+
+        def same(cfg, force=False, ttl=3500):
+            calls["s"] += 1
+            return [row]
+
+        old_s, old_n = lower.fetch_favorites, lower.fetch_news
+        lower.fetch_favorites = same
+        lower.fetch_news = lambda force=False: {"fox": [], "tech": []}
+        try:
+            app.board._tick_lower(t0)
+            self.assertEqual(calls["s"], 1)
+            version, blob, asof = app.board.version, app.board.final.tobytes(), app.board.snap["lower_asof"]
+            app.board._tick_lower(t0 + 5 * 60)
+            self.assertEqual(calls["s"], 1)
+            app.board._tick_lower(t0 + power.LIVE_POLL_S)
+            self.assertEqual(calls["s"], 2)
+            # Same score: no new frame and the as-of stamp stays put.
+            self.assertEqual(app.board.version, version)
+            self.assertEqual(app.board.final.tobytes(), blob)
+            self.assertEqual(app.board.snap["lower_asof"], asof)
+        finally:
+            lower.fetch_favorites, lower.fetch_news = old_s, old_n
 
     def test_saved_layout_defaults(self):
         import power
@@ -478,6 +514,12 @@ class FramesAndNight(unittest.TestCase):
             self.assertIn("shabbat", names)
             self.assertIn("newsletter", names)
             self.assertIn("weather", names)
+            self.assertNotIn("calendar", names)
+            fri = R.Ctx(now=_at(2026, 11, 6, 12), cfg=saved)
+            fnames = R.home_layout(fri)[1]
+            self.assertEqual(fnames, power.DAILY_SHABBAT)
+            self.assertNotIn("calendar", fnames)
+            self.assertFalse(R.show_markets(fri))
         finally:
             R.set_profile("e1001")
 
@@ -584,6 +626,7 @@ class DevicePoll(unittest.TestCase):
                     self.assertIn("newsletter", state["cfg"]["slots"])
                     self.assertIn("weather", state["cfg"]["slots"])
                     self.assertIn("no sports", state["power"]["line"])
+                    self.assertNotIn("calendar", state["cfg"]["slots"])
                 else:
                     self.assertEqual(state["cfg"]["layout"], "gallery")
                     self.assertEqual(state["cfg"]["e1001_home"], "lower")

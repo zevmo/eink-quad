@@ -84,6 +84,10 @@ def trips(now):
 SHUL = {"issue_range": "Nov 7 – Nov 13", "highlights": [
     {"title": "Youth", "body": "Junior congregation meets at 10:15 in the social hall."},
     {"title": "Kiddush", "body": "Kiddush is sponsored in honor of the November birthdays."},
+    {"title": "Mazal Tov", "body": "Mazal tov to the Cohen family on the birth of a daughter."},
+    {"title": "Learning", "body": "The Wednesday night shiur continues with chapter 4."},
+    {"title": "Coming up", "body": "Youth pizza and a parent meeting follow mincha on Sunday."},
+    {"title": "Refuah", "body": "Refuah shleimah to those named on the mi sheberach list."},
 ]}
 
 
@@ -102,9 +106,15 @@ def e1003(path, now):
     g = R.compose_gray(ctx)
     assert g.size == (1872, 1404), g.size
     assert R.home_mode(ctx) == "daily"
-    assert "sports" not in R.home_layout(ctx)[1]
+    boxes, names = R.home_layout(ctx)
+    assert "sports" not in names and "calendar" not in names, names
+    assert "weather" in names and "shabbat" in names and "newsletter" in names
+    if R.is_shabbat_day(now):
+        nl = boxes[names.index("newsletter")]
+        body = R.W * (R.H - R.GRID_Y)
+        assert (nl[2] - nl[0]) * (nl[3] - nl[1]) > 0.5 * body
     g.save(path)
-    print("wrote", path, g.size, R.home_mode(ctx), R.home_layout(ctx)[1])
+    print("wrote", path, g.size, R.home_mode(ctx), names)
 
 
 class game(S.Game):
@@ -172,6 +182,9 @@ if __name__ == "__main__":
     e1003(os.path.join(OUT, "e1003-daily-shabbat.png"), fri)
     e1001_news(os.path.join(OUT, "e1001-lower-news.png"), wed)
     sat = at(2026, 11, 7, 20, 5)
+    e1001_sports(os.path.join(OUT, "e1001-lower-one-game.png"), sat, [
+        lower_row("jets", live=game("in", sat - 4000, 17, 13, "Q3 6:02", "Patriots")),
+    ], sat - 900)
     e1001_sports(os.path.join(OUT, "e1001-lower-sports.png"), sat, [
         lower_row("jets", live=game("in", sat - 5000, 17, 13, "Q3 6:02", "Patriots")),
         lower_row("devils", live=game("in", sat - 2400, 2, 1, "2nd 8:11", "Rangers")),

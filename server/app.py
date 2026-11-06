@@ -154,7 +154,7 @@ def nav_pages(c=None):
     if power.is_lower_cfg(c):
         return ["quad"]
     if power.daily_home_cfg(c):
-        return [p for p in PAGES if p not in ("sports", "scoreboard", "shopping")]
+        return [p for p in PAGES if p not in ("sports", "scoreboard", "shopping", "calendar")]
     return list(PAGES)
 
 
@@ -522,7 +522,7 @@ class Board:
             else:
                 self._commit([(new, 0, True)], why)
         else:
-            regions = R.region_frames(self.final, new, R.paint_layout(cfg))
+            regions = R.region_frames(self.final, new, R.paint_layout(cfg, time.time()))
             # Many changed regions (a page switch) read better as one sweep than
             # as five sequential ~1s partials.
             if len(regions) > 3 or not regions:
@@ -544,8 +544,10 @@ class Board:
                 traceback.print_exc()
                 self.snap.setdefault("lower_news", {"fox": [], "tech": []})
         if sports:
+            live_on = any(power.is_active(r, now) for r in (self.snap.get("teams") or []))
+            ttl = max(60, power.LIVE_POLL_S - 45) if live_on else 3500
             try:
-                self.snap["teams"] = lower.fetch_favorites(cfg, force=force)
+                self.snap["teams"] = lower.fetch_favorites(cfg, force=force, ttl=ttl)
             except Exception:
                 traceback.print_exc()
                 self.snap.setdefault("teams", [])
@@ -575,19 +577,26 @@ class Board:
         return True
 
     def _tick_lower(self, now):
-        """Hourly news in the daytime. Hourly scores while a favorite is on,
-        about to start, or still inside the final hold — including quiet hours,
-        so a late game is not frozen. Unchanged scores do not redraw."""
+        """News hourly in the daytime. While a favorite is actually playing,
+        scores every 15 minutes (including quiet hours, so a late game is not
+        frozen). Held finals and the pre-game look stay hourly. An unchanged
+        score does not redraw."""
         hour = power.local_hour_id(now)
+        slot = power.live_slot(now)
+        rows = self.snap.get("teams") or []
+        live_on = any(power.is_active(r, now) for r in rows)
         want_news = power.daytime(cfg, now) and self.beats.get("lower_news") != hour
-        want_sports = self.beats.get("lower_sports") != hour and (
-            power.daytime(cfg, now) or power.starts_soon(self.snap.get("teams") or [], now))
+        want_live = live_on and self.beats.get("lower_live") != slot
+        want_slow = (not live_on) and self.beats.get("lower_sports") != hour and (
+            power.daytime(cfg, now) or power.starts_soon(rows, now))
         paint = False
-        if want_news or want_sports:
-            paint = self.refresh_lower(force=False, news=want_news, sports=want_sports)
+        if want_news or want_live or want_slow:
+            paint = self.refresh_lower(force=False, news=want_news, sports=want_live or want_slow)
             if want_news:
                 self.beats["lower_news"] = hour
-            if want_sports:
+            if want_live:
+                self.beats["lower_live"] = slot
+            if want_slow or want_live:
                 self.beats["lower_sports"] = hour
         elif self._lower_sig_moved(now):
             paint = True
@@ -610,9 +619,11 @@ class Board:
             w = power.due_window(self.beats.get("window"), now, cfg)
             if w is not None:
                 self.beats["window"] = w
-                for name in ("weather", "news", "shabbat", "calendar", "trips", "sky", "brief"):
+                for name in ("weather", "news", "shabbat", "trips", "sky", "brief"):
                     if name not in due:
                         due.append(name)
+                if not power.daily_home_cfg(cfg) and "calendar" not in due:
+                    due.append("calendar")
                 with self.cond:
                     self.cycle += 1
         edge = power.shabbat_edge(self.beats.get("shabbat_edge") or 0, self.snap.get("shabbat"), now)
@@ -1337,7 +1348,10 @@ class H(BaseHTTPRequestHandler):
         if not wins:
             raise ValueError("need at least one content window")
         new["content_windows"] = wins
-        if new["layout"] not in ("gallery", "lower"):
+        # The daily face picks its own rectangles (weekday vs Shabbat). A saved
+        # slot list is not what the glass draws, so it does not have to be 7 long.
+        if new["layout"] not in ("gallery", "lower") and not (
+                new["layout"] == "thirds" and new.get("daily_home", True)):
             n = R.LAYOUTS[new["layout"]]
             sl = new["slots"]
             if len(sl) != n or len(set(sl)) != n or any(x not in R.CORNER_PANELS for x in sl):

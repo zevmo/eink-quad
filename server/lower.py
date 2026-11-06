@@ -51,13 +51,14 @@ def _pick(items, n=6, hours=36):
     return (fresh or items)[:n]
 
 
-def fetch_favorites(cfg, force=False):
-    """TeamRows for the allowlist only. No odds, no league slate, no extra teams."""
+def fetch_favorites(cfg, force=False, ttl=3500):
+    """TeamRows for the allowlist only. No odds, no league slate, no extra teams.
+    ttl is how long a fetched schedule may be reused. Live polls pass ~15 min."""
     rows = []
     for key in power.selected_favorites(cfg):
         if key not in S.TEAMS:
             continue
-        games = S.team_games(key, fast=True, force=force, ttl=3500) or []
+        games = S.team_games(key, fast=True, force=force, ttl=ttl) or []
         row = S.TeamRow(key=key, label=S.TEAMS[key][0],
                         record=games[0].record if games else "",
                         logo=next((g.our_logo for g in games if g.our_logo), ""))
@@ -132,21 +133,22 @@ def _column(d, x, right, label, items):
 def _scores(c, d, shown, asof, now):
     w, h = R.W, R.H
     _bar(d, w, "SCORES", asof, now)
-    R.text(d, (16, 50), "Hourly  ·  not a live clock", R.F("cm", 16))
-    d.line((12, 72, w - 12, 72), fill=R.INK, width=2)
+    R.text(d, (16, 48), "Every 15 min while live  ·  not a live clock", R.F("cm", 16))
+    d.line((12, 70, w - 12, 70), fill=R.INK, width=2)
     n = max(1, len(shown))
-    top, bot = 84, h - 28
+    top, bot = 78, h - 16
     rh = (bot - top) / n
-    big = n <= 2
     for i, row in enumerate(shown):
         y = top + i * rh
-        _score_row(d, row, 16, y, w - 16, rh, big, now)
+        _score_row(d, row, 16, y, w - 16, rh, n, now)
         if i:
             d.line((16, int(y), w - 16, int(y)), fill=R.INK, width=1)
     d.line((0, h - 1, w, h - 1), fill=R.INK, width=2)
 
 
-def _score_row(d, row, x, y, right, rh, big, now):
+def _score_row(d, row, x, y, right, rh, n, now):
+    """Type scales with the band. One game fills the 800x480; a few games
+    still use the row instead of a tiny list at the top."""
     active = power.is_active(row, now)
     g = (row.live or row.next) if active else row.last
     if g is None:
@@ -159,10 +161,20 @@ def _score_row(d, row, x, y, right, rh, big, now):
     if kind == "FINAL" and detail.strip().lower() in ("", "final"):
         detail = ""
     sub = who if not detail else f"{who}  ·  {detail}"
-    nf = R.F("cb", 32 if big else 22)
-    sf = R.F("b", 40 if big else 26)
-    kf = R.F("csb", 16 if big else 14)
-    R.pill(d, x, y + 6, kind, kf, h=22)
-    R.text(d, (x + (78 if big else 70), y + (8 if big else 6)), name.upper(), nf, anchor="lt")
-    R.text(d, (right, y + (4 if big else 2)), score, sf, anchor="rt")
-    R.text(d, (x, y + (36 if big else 30)), R.ellipsize(d, sub, R.F("m", 20 if big else 16), right - x), R.F("m", 20 if big else 16))
+    if n == 1:
+        # One matchup owns the open panel: name, then a score you can read from the counter.
+        y0 = y + 16
+        R.pill(d, x, y0, kind, R.F("csb", 22), h=34)
+        R.text(d, (x, y0 + 52), name.upper(), R.F("cb", 72))
+        R.text(d, (right, y0 + 120), score, R.F("b", 112), anchor="ra")
+        R.text(d, (x, y0 + 270), R.ellipsize(d, sub, R.F("m", 32), right - x), R.F("m", 32))
+        return
+    score_px = int(max(36, min(78, rh * 0.46)))
+    name_px = int(max(22, min(44, rh * 0.28)))
+    sub_px = int(max(15, min(22, rh * 0.16)))
+    sf, nf, subf = R.F("b", score_px), R.F("cb", name_px), R.F("m", sub_px)
+    y0 = y + max(2, (rh - (score_px + sub_px + 28)) / 2)
+    R.pill(d, x, y0, kind, R.F("csb", max(13, sub_px - 2)), h=max(20, sub_px + 4))
+    R.text(d, (x + 78, y0 + 2), name.upper(), nf)
+    R.text(d, (right, y0), score, sf, anchor="ra")
+    R.text(d, (x, y0 + score_px + 6), R.ellipsize(d, sub, subf, right - x), subf)

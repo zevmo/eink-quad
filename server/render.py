@@ -1731,7 +1731,9 @@ def panel_newsletter(ctx: Ctx, size):
     if not blocks:
         _calm(d, w, 50, "Newsletter loads Thursday", "Fetched Thursdays 8 PM ET")
         return c
-    y, nb, last = _shul_flow(d, blocks, 12, 36, w - 4, h - 22, F("cm", 15), lines_per=2)
+    big = w >= 400 and h >= 400
+    y, nb, last = _shul_flow(d, blocks, 12, 36, w - 4, h - 22,
+                             F("cm", 18 if big else 15), lines_per=4 if big else 2)
     left = sum(len(i) for _, i in blocks[nb:]) + (len(blocks[nb - 1][1]) - last if nb else 0)
     if left > 0:
         text(d, (w - 12, h - 6), f"+{left} more  ·  newsletter page", F("cm", 13), anchor="rd")
@@ -2048,9 +2050,11 @@ def home_layout(ctx):
     """(boxes, slot names) for the home screen, re-picked every render."""
     import power
     if power.daily_home_cfg(ctx.cfg):
-        # Fixed thirds. Sports / scoreboard / league never get a slot, even if
-        # a saved config.json still lists them.
-        return slot_boxes("thirds"), list(power.DAILY_SLOTS)
+        # Fixed daily faces. Sports, the NFL slate, and the calendar never get a slot.
+        # Friday and Saturday: the newsletter is the majority of the body.
+        if is_shabbat_day(ctx.now):
+            return slot_boxes("daily_shabbat"), list(power.DAILY_SHABBAT)
+        return slot_boxes("daily_weekday"), list(power.DAILY_SLOTS)
     mode = home_mode(ctx)
     if mode in MODE_SLOTS:
         return slot_boxes("thirds_" + mode), list(MODE_SLOTS[mode])
@@ -2059,6 +2063,31 @@ def home_layout(ctx):
 
 def slot_boxes(layout="quad"):
     """Slot rectangles in layout units."""
+    if layout in ("daily_weekday", "daily_shabbat"):
+        x1, x2 = W // 3, 2 * W // 3
+        ch = (H - GRID_Y) // 3
+        y0, y1, y2, y3 = GRID_Y, GRID_Y + ch, GRID_Y + 2 * ch, H
+        if layout == "daily_shabbat":
+            # Newsletter is the left two-thirds, full height (majority of the body).
+            # Right column: Shabbat times, weather, news. No markets (the news
+            # panel already hides quotes on Friday and Saturday). No calendar.
+            return [
+                (0, y0, x2, y3),
+                (x2, y0, W, y1),
+                (x2, y1, W, y2),
+                (x2, y2, W, y3),
+            ]
+        # Weekday thirds: Shabbat and a tall newsletter on the left, weather and
+        # news wider across the space the calendar used to occupy, trips and sky
+        # along the bottom. No sports column.
+        return [
+            (0, y0, x1, y1),
+            (x1, y0, W, y1),
+            (0, y1, x1, y3),
+            (x1, y1, W, y2),
+            (x1, y2, x2, y3),
+            (x2, y2, W, y3),
+        ]
     if layout.startswith("thirds_"):
         x1, x2 = W // 3, 2 * W // 3
         ch = (H - GRID_Y) // 3
@@ -2528,11 +2557,17 @@ def is_gallery(ctx) -> bool:
     return power.is_gallery_legacy(ctx.cfg) and ctx.page not in DETAILS
 
 
-def paint_layout(cfg) -> str:
-    """Layout key for region diffs. The lower face is one screen, not gallery slots."""
+def paint_layout(cfg, now=None) -> str:
+    """Layout key for region diffs. The lower face is one screen, not gallery slots.
+    The daily board's boxes change on Friday and Saturday, so the diff has to
+    use that face rather than the old 7-slot thirds grid."""
     import power
     if power.is_lower_cfg(cfg):
         return "lower"
+    if power.daily_home_cfg(cfg):
+        if is_shabbat_day(time.time() if now is None else now):
+            return "daily_shabbat"
+        return "daily_weekday"
     return layout_of(cfg)
 
 

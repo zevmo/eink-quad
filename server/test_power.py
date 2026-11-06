@@ -173,6 +173,7 @@ class Paint(unittest.TestCase):
         boxes, names = R.home_layout(daily)
         self.assertEqual(names, power.DAILY_SLOTS)
         self.assertNotIn("sports", names)
+        self.assertNotIn("calendar", names)
         self.assertNotIn("scoreboard", names)
         self.assertNotIn("league", names)
         self.assertNotIn("shopping", names)
@@ -187,6 +188,42 @@ class Paint(unittest.TestCase):
         slate = R.Ctx(now=sunday, cfg={"layout": "thirds", "daily_home": False, "smart_home": True},
                       league=league)
         self.assertEqual(R.home_mode(slate), "nfl")
+        # Friday/Saturday: newsletter is the majority; weather and Shabbat stay; no markets, no calendar.
+        shab = R.Ctx(now=friday, cfg={"layout": "thirds", "daily_home": True},
+                     quotes=[type("Q", (), {"name": "S&P 500"})()])
+        sboxes, snames = R.home_layout(shab)
+        self.assertEqual(snames, power.DAILY_SHABBAT)
+        self.assertNotIn("calendar", snames)
+        self.assertNotIn("sports", snames)
+        self.assertIn("weather", snames)
+        self.assertIn("shabbat", snames)
+        self.assertFalse(R.show_markets(shab))
+        nl = sboxes[snames.index("newsletter")]
+        body = R.W * (R.H - R.GRID_Y)
+        self.assertGreater((nl[2] - nl[0]) * (nl[3] - nl[1]), 0.5 * body)
+        wboxes, wnames = R.home_layout(R.Ctx(now=wed, cfg={"layout": "thirds", "daily_home": True}))
+        self.assertIn("weather", wnames)
+        self.assertNotIn("calendar", wnames)
+        self.assertEqual(wnames, power.DAILY_SLOTS)
+
+    def test_one_game_fills_the_panel(self):
+        R.set_profile("e1001")
+        now = _at(2026, 11, 4, 20)
+        row = Row("jets", live=G("in", now - 1000, 17, 13, "Q3 6:02", "Patriots"))
+        img = lower.compose(R.Ctx(now=now, cfg={"layout": "lower"}, teams=[row], gallery={"asof": now - 600}))
+        # Rows of ink below the header. A one-game score has to occupy the body,
+        # not a short list under the title.
+        ink_rows = sum(1 for y in range(80, img.size[1] - 8)
+                       if any(img.getpixel((x, y)) < 180 for x in range(20, img.size[0] - 20, 6)))
+        self.assertGreater(ink_rows, 180)
+        # Three games still draw, but one game's ink is taller than a short list.
+        rows = [
+            Row("jets", live=G("in", now - 1000, 17, 13, "Q3", "NE")),
+            Row("devils", live=G("in", now - 800, 2, 1, "2nd", "NYR")),
+            Row("nets", live=G("in", now - 600, 88, 80, "4th", "BOS")),
+        ]
+        many = lower.compose(R.Ctx(now=now, cfg={"layout": "lower"}, teams=rows, gallery={"asof": now - 600}))
+        self.assertEqual(many.size, img.size)
 
     def test_lower_paint_ignores_clock(self):
         R.set_profile("e1001")

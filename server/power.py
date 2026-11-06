@@ -1,7 +1,9 @@
 """Power-format policy for the two fridge boards. Pure functions, no I/O.
 
 Big E1003 (layout thirds, daily_home default on): one stable thirds face —
-Shabbat, newsletter, weather, news (markets off Fri–Sat), trips, calendar, sky.
+Shabbat, newsletter, weather, news (markets off Fri–Sat), trips, sky.
+No calendar tile and no sports. On Friday and Saturday the newsletter
+takes the majority of the body.
 No sports and no NFL slate. Content refreshes at local windows (default
 7:30, 12:30, 18:30) and at Shabbat transitions, not on a short interval.
 
@@ -33,9 +35,11 @@ FAVORITES = (
 )
 FAVORITE_KEYS = tuple(k for k, *_ in FAVORITES)
 
-# Original thirds geometry, sports/scoreboard replaced with calendar + sky.
-# Shopping stays off this face (no shopping content is invented).
-DAILY_SLOTS = ["shabbat", "newsletter", "weather", "news", "trips", "calendar", "sky"]
+# Weekday thirds, no calendar and no sports. Order matches daily_weekday boxes.
+# Shopping stays off this face. Shabbat swaps to DAILY_SHABBAT (newsletter majority).
+DAILY_SLOTS = ["shabbat", "weather", "newsletter", "news", "trips", "sky"]
+DAILY_SHABBAT = ["newsletter", "shabbat", "weather", "news"]
+LIVE_POLL_S = 15 * 60
 SPORTS_PANELS = {"sports", "scoreboard", "league", "navy"}
 
 # How long a started-but-not-yet-flipped game still counts as on. Not the final hold.
@@ -155,6 +159,11 @@ def due_window(last, now, c):
     if hit is None or hit == last:
         return None
     return hit
+
+
+def live_slot(now) -> int:
+    """15-minute bucket for in-progress favorite scores."""
+    return int(now // LIVE_POLL_S)
 
 
 def local_hour_id(now) -> int:
@@ -450,7 +459,7 @@ def describe(c, snap=None) -> str:
     if is_lower_cfg(c):
         sig = snap.get("lower_sig") or ("news",)
         face = sig[0] if sig else "news"
-        return f"Small board: {face} · hourly · quiet 22:00–07:00"
+        return f"Small board: {face} · live scores every 15 min · quiet 22:00–07:00"
     if daily_home_cfg(c) and windows_on(c):
         return "Big board: daily thirds, no sports · 7:30 / 12:30 / 18:30 · quiet 22:00–07:00"
     if windows_on(c):
