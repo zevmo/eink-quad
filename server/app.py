@@ -38,6 +38,7 @@ import sources as S  # noqa: E402
 from sky import Sky  # noqa: E402
 import ical  # noqa: E402
 import shul as SHUL  # noqa: E402
+import power  # noqa: E402
 
 # ---------------------------------------------------------------- CONFIG
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -73,8 +74,12 @@ DEFAULTS = {
     "slot_rotation": [],         # optional: 4 lists of panels each corner cycles through ([] = use slots)
     "rotate_min": 0,             # how often rotating corners advance (0 = every interval_min beat)
     "rotate_pin_live": True,     # hold a corner on a live game / airborne flight / near candle lighting / alert
-    "full_every_min": 120,       # one flashing full refresh this often, to wipe ghosting
-    "quiet": "",                 # "23-6" = no scheduled updates overnight
+    "full_every_min": 1440,      # rare ghost clean. Power format floors a shorter legacy value to a day.
+    "quiet": "22-7",             # "22-7" = no scheduled updates 22:00–07:00 local. Power format always keeps that span.
+    "cadence": "windows",        # windows = 7:30/12:30/18:30 local; interval = the old interval_min beat
+    "content_windows": ["7:30", "12:30", "18:30"],
+    "daily_home": True,          # E1003 thirds: Shabbat, newsletter, weather, no sports / no NFL slate
+    "e1001_home": "lower",       # lower = Fox+tech / favorite scores; gallery = old rotating screensaver
     "dark": False,
     "feeds": ["world", "us", "markets"],
     "max_age_h": 18,
@@ -107,11 +112,16 @@ DEFAULTS = {
     "max_partials": 4,
 }
 
-# E1003 (QUAD_MODEL=e1003): the 10.3" panel defaults to the 3x3 home.
-E1003_SLOTS = ["shabbat", "newsletter", "weather", "news", "trips", "sports", "scoreboard"]
+# E1003 (QUAD_MODEL=e1003): stable daily thirds, no sports. E1001: the lower news/scores face.
+E1003_SLOTS = list(power.DAILY_SLOTS)
 if R.MODEL == "e1003":
     DEFAULTS["layout"] = "thirds"
+    DEFAULTS["daily_home"] = True
     DEFAULTS["slots"] = [p for p in E1003_SLOTS if p in R.CORNER_PANELS][:9]
+if R.MODEL == "e1001":
+    DEFAULTS["layout"] = "lower"
+    DEFAULTS["e1001_home"] = "lower"
+    DEFAULTS["slots"] = ["news"]
 
 
 def load_json(path, default):
@@ -134,13 +144,18 @@ S.TEAMS.update({k: tuple(v) for k, v in cfg.get("custom_teams", {}).items()})
 
 
 def quiet_now(t=None):
-    q = cfg.get("quiet") or ""
-    m = re.fullmatch(r"\s*(\d{1,2})\s*-\s*(\d{1,2})\s*", q)
-    if not m:
-        return False
-    a, b = int(m.group(1)), int(m.group(2))
-    h = time.localtime(t or time.time()).tm_hour
-    return (a <= h < b) if a < b else (h >= a or h < b)
+    return power.quiet_now(cfg, t)
+
+
+def nav_pages(c=None):
+    """Button cycle. The small board stays on its one face (no Shabbat/newsletter
+    pages). The daily big board does not page onto sports, the slate, or shopping."""
+    c = cfg if c is None else c
+    if power.is_lower_cfg(c):
+        return ["quad"]
+    if power.daily_home_cfg(c):
+        return [p for p in PAGES if p not in ("sports", "scoreboard", "shopping")]
+    return list(PAGES)
 
 
 def lipo_percent(v: float) -> int:
@@ -225,6 +240,10 @@ def public_cfg(c):
             out[k] = [MASK] * len([x for x in v if x])
         else:
             out[k] = MASK if v else ""
+    if power.daily_home_cfg(out):
+        # The glass ignores a saved sports slot list. Show the face it actually draws.
+        out["slots"] = list(power.DAILY_SLOTS)
+        out["slot_rotation"] = []
     return out
 
 
@@ -340,6 +359,10 @@ class Board:
             self.snap["heads"] = S.headlines(cfg, force)
             self.snap["quotes"] = S.quotes(cfg, force)
         elif name == "sports":
+            if power.daily_home_cfg(cfg):
+                # Big board does not poll ESPN or the NFL slate.
+                self.snap["teams"], self.snap["live"], self.snap["league"] = [], [], []
+                return
             teams, live = S.sports(cfg, force)
             if cfg.get("sports_logos"):
                 urls = [r.logo for r in teams]
@@ -412,6 +435,12 @@ class Board:
         now = time.time()
         sticky = self.sticky if (self.sticky and (not self.sticky_until or now < self.sticky_until)) else ""
         dv = self.device
+        gallery = dict(sn.get("gallery") or {})
+        if power.is_lower_cfg(cfg):
+            news = sn.get("lower_news") or {}
+            gallery["asof"] = sn.get("lower_asof") or 0
+            gallery["fox"] = news.get("fox") or []
+            gallery["tech"] = news.get("tech") or []
         batt = lipo_percent(dv["vbat"]) if dv.get("vbat") else None
         t_f = dv.get("t")
         if t_f is not None and cfg.get("units") != "C":
@@ -422,7 +451,7 @@ class Board:
                      event=sn.get("event"), upcoming=sn.get("upcoming") or [], shabbat=sn.get("shabbat"), shul=sn.get("shul"),
                      calendar=sn.get("calendar"), trips=sn.get("trips"), live=sn.get("live_flight"),
                      shopping=sn.get("shopping") or [], rot_step=self.rot_step,
-                     gallery=sn.get("gallery") or {}, gallery_offset=self.gallery_offset, brief=sn.get("brief", ""),
+                     gallery=gallery, gallery_offset=self.gallery_offset, brief=sn.get("brief", ""),
                      sticky=sticky, indoor_f=t_f, indoor_rh=dv.get("rh"), battery=batt,
                      on_usb=dv.get("mode") == "live", cycle=self.cycle, updated=self.updated or now,
                      page=page or self.page)
@@ -444,9 +473,11 @@ class Board:
                         f"{', full' if any(f[2] for f in frames) else ''})")
         self.cond.notify_all()
 
-    def redraw(self, why, full=False, major=False):
+    def redraw(self, why, full=False, major=False, clean=True):
         """Render from the current snapshot; commit if anything changed.
-        major = a scheduled whole-board update, page change or button refresh."""
+        major = a scheduled whole-board update, page change or button refresh.
+        clean = False skips the scheduled full flash (quiet-hour Shabbat / alert
+        updates stay partial; the ghost clean waits for the next daytime window)."""
         t0 = time.time()
         if self.note is not None and nb is not None:
             return
@@ -457,13 +488,19 @@ class Board:
         new_body = new.crop((0, R.px(R.HEAD_H), R.PW, R.PH))
         changed = ImageChops.logical_xor(old_body, new_body).getbbox() is not None
         self.render_ms = int((time.time() - t0) * 1000)
-        full = full or self.force_full or (
-            cfg["full_every_min"] and time.time() - self.last_full > cfg["full_every_min"] * 60
-            and changed and not quiet_now())
-        if changed and cfg.get("crisp") and (major or self.partials >= cfg.get("max_partials", 4)):
+        period = power.full_every_min(cfg)
+        if clean:
+            full = full or self.force_full or (
+                period and time.time() - self.last_full > period * 60
+                and changed and not quiet_now())
+        # Crisp mode full-flashes every scheduled update. The power format keeps
+        # those partial and only full-flashes on the rare ghost clean, boot, or
+        # an explicit full refresh. Photos on the legacy gallery still need a full.
+        if changed and cfg.get("crisp") and not power.partials_preferred(cfg) and (
+                major or self.partials >= cfg.get("max_partials", 4)):
             full = True
-        if changed and R.layout_of(cfg) == "gallery" and self.page == "quad":
-            full = True          # photos ghost badly under partials
+        if changed and power.is_gallery_legacy(cfg) and self.page == "quad":
+            full = True
         if not changed and not full:
             return
         if full:
@@ -475,13 +512,146 @@ class Board:
             else:
                 self._commit([(new, 0, True)], why)
         else:
-            regions = R.region_frames(self.final, new, R.layout_of(cfg))
+            regions = R.region_frames(self.final, new, R.paint_layout(cfg))
             # Many changed regions (a page switch) read better as one sweep than
             # as five sequential ~1s partials.
             if len(regions) > 3 or not regions:
                 regions = [new]
             self.partials += 1
             self._commit([(f, 0, False) for f in regions], why)
+
+    def refresh_lower(self, force=False, news=True, sports=True):
+        """Fetch the small board. Returns True when the content signature moved
+        (or the user asked for a refresh). Does not redraw; the caller does,
+        after lower_asof is set. An unchanged final leaves the signature alone."""
+        import lower
+        now = time.time()
+        if news:
+            try:
+                self.snap["lower_news"] = lower.fetch_news(force=force)
+            except Exception:
+                traceback.print_exc()
+                self.snap.setdefault("lower_news", {"fox": [], "tech": []})
+        if sports:
+            try:
+                self.snap["teams"] = lower.fetch_favorites(cfg, force=force)
+            except Exception:
+                traceback.print_exc()
+                self.snap.setdefault("teams", [])
+        bundle = self.snap.get("lower_news") or {}
+        sig = power.content_signature(self.snap.get("teams") or [], now,
+                                      bundle.get("fox") or [], bundle.get("tech") or [])
+        moved = sig != self.snap.get("lower_sig")
+        if moved or force:
+            self.snap["lower_sig"] = sig
+            self.snap["lower_asof"] = now
+            face = sig[0] if sig else "news"
+            if moved:
+                self.note_event(f"lower face {face}")
+        return moved or force
+
+    def _lower_sig_moved(self, now):
+        """Hold expired, or a game started, using rows we already have. No network."""
+        bundle = self.snap.get("lower_news") or {}
+        sig = power.content_signature(self.snap.get("teams") or [], now,
+                                      bundle.get("fox") or [], bundle.get("tech") or [])
+        if sig == self.snap.get("lower_sig"):
+            return False
+        self.snap["lower_sig"] = sig
+        self.snap["lower_asof"] = now
+        self.note_event(f"lower face {sig[0]}")
+        return True
+
+    def _tick_lower(self, now):
+        """Hourly news in the daytime. Hourly scores while a favorite is on,
+        about to start, or still inside the final hold — including quiet hours,
+        so a late game is not frozen. Unchanged scores do not redraw."""
+        hour = power.local_hour_id(now)
+        want_news = power.daytime(cfg, now) and self.beats.get("lower_news") != hour
+        want_sports = self.beats.get("lower_sports") != hour and (
+            power.daytime(cfg, now) or power.starts_soon(self.snap.get("teams") or [], now))
+        paint = False
+        if want_news or want_sports:
+            paint = self.refresh_lower(force=False, news=want_news, sports=want_sports)
+            if want_news:
+                self.beats["lower_news"] = hour
+            if want_sports:
+                self.beats["lower_sports"] = hour
+        elif self._lower_sig_moved(now):
+            paint = True
+        # A midnight ghost-clean waits until daytime. Quiet hours stay dark
+        # unless the score/news signature actually moved.
+        if not paint and (not self.force_full or quiet_now(now)):
+            return
+        with self.cond:
+            self.redraw("lower update", major=False)
+
+    def _maybe_alerts(self, now):
+        """Severe weather should not wait for the next window. Temperature-only
+        changes are put back so they don't ride along on a Shabbat redraw."""
+        slot = int(now // 1800)
+        if self.beats.get("alert") == slot:
+            return False
+        self.beats["alert"] = slot
+        old = self.snap.get("weather")
+        old_sig = tuple((a[0], a[2]) for a in (getattr(old, "alerts", None) or [])[:4])
+        try:
+            self.take("weather")
+        except Exception:
+            traceback.print_exc()
+            return False
+        new = self.snap.get("weather")
+        new_sig = tuple((a[0], a[2]) for a in (getattr(new, "alerts", None) or [])[:4])
+        if new_sig == old_sig:
+            self.snap["weather"] = old
+            return False
+        return True
+
+    def _tick_windows(self, now):
+        """Big board: three local windows, plus Shabbat edges and a Friday/Sunday
+        midnight so markets leave and come back without waiting until morning."""
+        due = []
+        if self.beats.get("market_flip") and self.beats.get("market_flip") != self.beats.get("market_flip_done"):
+            self.beats["market_flip_done"] = self.beats["market_flip"]
+            due.extend(["news", "shabbat", "weather"])
+        if not quiet_now(now):
+            w = power.due_window(self.beats.get("window"), now, cfg)
+            if w is not None:
+                self.beats["window"] = w
+                for name in ("weather", "news", "shabbat", "calendar", "trips", "sky", "brief"):
+                    if name not in due:
+                        due.append(name)
+                with self.cond:
+                    self.cycle += 1
+        edge = power.shabbat_edge(self.beats.get("shabbat_edge") or 0, self.snap.get("shabbat"), now)
+        if edge is not None:
+            self.beats["shabbat_edge"] = edge
+            for name in ("shabbat", "news"):
+                if name not in due:
+                    due.append(name)
+        if self._maybe_alerts(now) and "weather" not in due:
+            due.append("weather")
+        if ical.airborne(self.snap.get("trips")):
+            hid = power.local_hour_id(now)
+            if self.beats.get("flight") != hid:
+                self.beats["flight"] = hid
+                if "trips" not in due:
+                    due.append("trips")
+        if not due:
+            return   # a midnight full-clean flag is consumed by the next real window
+        if power.daily_home_cfg(cfg):
+            self.snap["teams"], self.snap["live"], self.snap["league"] = [], [], []
+        for name in due:
+            try:
+                self.take(name)
+            except Exception:
+                traceback.print_exc()
+        with self.cond:
+            why = "scheduled " + ",".join(due) if due else "cleaning"
+            quiet = quiet_now(now)
+            # Quiet-hour Shabbat / alert updates must not full-flash. The
+            # midnight ghost-clean flag stays set until the next daytime window.
+            self.redraw(why, major=bool(due) and not quiet, clean=not quiet)
 
     # -- scheduler (runs every few seconds)
     def tick(self):
@@ -501,11 +671,19 @@ class Board:
         self.check_notes()
         self.weekly(now)
         day = time.strftime("%Y-%m-%d", time.localtime(now))
-        if self.beats.get("day") != day:      # local midnight: refetch everything and redraw so
-            if self.beats.get("day") is not None:   # Today/Tomorrow labels and the Sun NFL mode flip now
+        if self.beats.get("day") != day:      # local midnight: labels flip; paint waits for a window
+            if self.beats.get("day") is not None:   # unless this midnight is Friday or Sunday (markets)
                 self.beats.pop("main", None)
                 self.force_full = True
+                if power.market_flip_day(now):
+                    self.beats["market_flip"] = day
             self.beats["day"] = day
+        if power.is_lower_cfg(cfg):
+            self._tick_lower(now)
+            return
+        if power.windows_on(cfg):
+            self._tick_windows(now)
+            return
         if quiet_now():
             return
         iv = max(1, cfg["interval_min"]) * 60
@@ -535,7 +713,7 @@ class Board:
                 if self.beats.get("flight") != fb:
                     due.append("trips")
                     self.beats["flight"] = fb
-        if R.layout_of(cfg) == "gallery" and self.page == "quad":   # E1001 screensaver: next category
+        if power.is_gallery_legacy(cfg) and self.page == "quad":   # old E1001 screensaver only
             import gallery
             gb = int(now // (gallery.rotate_min(cfg) * 60))
             if self.beats.get("gallery_rot") != gb:
@@ -561,8 +739,9 @@ class Board:
 
     def weekly(self, now):
         """Thursday 8 PM ET: refetch the Jewish calendar and the YIOT newsletter (shul.json).
-        Friday 8 AM ET retries only if the Thursday fetch failed."""
-        if not cfg.get("weekly_jewish", True):
+        Friday 8 AM ET retries only if the Thursday fetch failed.
+        The small board does not show either, so it does not poll them."""
+        if power.is_lower_cfg(cfg) or not cfg.get("weekly_jewish", True):
             return
         from datetime import datetime, timedelta
         dt = datetime.fromtimestamp(now)
@@ -596,7 +775,10 @@ class Board:
             self.redraw("weekly jewish data")
 
     def auto_scoreboard(self):
-        """scoreboard_auto: jump to the scoreboard when a team goes live, home when it's over."""
+        """scoreboard_auto: jump to the scoreboard when a team goes live, home when it's over.
+        The daily big board and the small board never leave home for a scoreboard."""
+        if power.daily_home_cfg(cfg) or power.is_lower_cfg(cfg):
+            return
         live = bool(self.snap.get("live"))
         if cfg.get("scoreboard_auto") and live and self.page == "quad" and self.note is None:
             self.page, self.page_since, self.auto_sb = "scoreboard", time.time(), True
@@ -671,6 +853,11 @@ class Board:
                     return self.redraw("home", major=True)
                 self.note_event("manual refresh")
         if b == 0:
+            if power.is_lower_cfg(cfg):
+                self.refresh_lower(force=True)
+                with self.cond:
+                    self.redraw("refresh button", major=True)
+                return
             for name in ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
                 try:
                     self.take(name, force=True)
@@ -681,12 +868,17 @@ class Board:
                 self.redraw("refresh button", major=True)
             return
         with self.cond:
-            if R.layout_of(cfg) == "gallery" and self.page == "quad":
+            if power.is_lower_cfg(cfg):
+                return   # one face; don't open Shabbat / newsletter / sports pages
+            if power.is_gallery_legacy(cfg) and self.page == "quad":
                 self.gallery_offset += 1 if b == 2 else -1     # step modes; the timer keeps rotating from here
                 return self.redraw(f"gallery step {self.gallery_offset}", major=True)
             self.auto_sb = False
-            i = PAGES.index(self.page)
-            self.page = PAGES[(i + (1 if b == 2 else -1)) % len(PAGES)]
+            pages = nav_pages()
+            if self.page not in pages:
+                self.page = "quad"
+            i = pages.index(self.page)
+            self.page = pages[(i + (1 if b == 2 else -1)) % len(pages)]
             self.page_since = time.time()
             self.redraw(f"page {self.page}", major=True)
 
@@ -694,9 +886,11 @@ class Board:
         """Touch (E1003). Home: tap a slot to open its page. Detail page: any tap goes home."""
         with self.cond:
             self.unread = False
-            if self.note is None and self.page == "quad" and R.layout_of(cfg) == "gallery":
-                self.gallery_offset += 1                   # E1001 gallery: tap = skip to next category
+            if self.note is None and self.page == "quad" and power.is_gallery_legacy(cfg):
+                self.gallery_offset += 1                   # legacy screensaver only; the lower face does not skip
                 return self.redraw(f"gallery tap {self.gallery_offset}", major=True)
+            if self.note is None and self.page == "quad" and power.is_lower_cfg(cfg):
+                return   # small board has nothing to open; E1003 GT911 taps are unchanged
             if self.note is not None or self.page != "quad":
                 self.note = None
                 self.page = "quad"
@@ -1075,6 +1269,7 @@ class H(BaseHTTPRequestHandler):
                            "battery": lipo_percent(dv["vbat"]) if dv.get("vbat") else None,
                            "in_sync": dv.get("version") == board.version},
                 "quiet_now": quiet_now(),
+                "power": {"line": power.describe(cfg, board.snap)},
             }
         st["sources"] = {
             "weather": S._weather.status(), "alerts": S._alerts.status(), "news": S.news_status(),
@@ -1111,8 +1306,8 @@ class H(BaseHTTPRequestHandler):
                 if not v:
                     new[k] = []
                     continue
-                if not (isinstance(v, list) and len(v) == 4 and all(isinstance(x, list) and x for x in v)):
-                    raise ValueError("slot_rotation must be 4 non-empty lists of panels")
+                if not (isinstance(v, list) and v and all(isinstance(x, list) and x for x in v)):
+                    raise ValueError("slot_rotation must be non-empty lists of panels")
                 bad = {str(n) for x in v for n in x} - set(R.CORNER_PANELS)
                 if bad:
                     raise ValueError(f"slot_rotation: not a corner panel: {', '.join(sorted(bad))}")
@@ -1134,12 +1329,26 @@ class H(BaseHTTPRequestHandler):
             new[k] = v
         if new.get("layout") not in R.LAYOUTS:
             raise ValueError("layout must be one of: " + ", ".join(R.LAYOUTS))
-        n = R.LAYOUTS[new["layout"]]
-        sl = new["slots"]
-        if len(sl) != n or len(set(sl)) != n or any(x not in R.CORNER_PANELS for x in sl):
-            raise ValueError(f"{new['layout']} needs {n} different panels from: {', '.join(R.CORNER_PANELS)}")
-        if new.get("slot_rotation") and len(new["slot_rotation"]) != n:
-            raise ValueError(f"slot_rotation needs {n} lists for the {new['layout']} layout")
+        if new.get("cadence") not in ("windows", "interval"):
+            raise ValueError("cadence must be windows or interval")
+        if new.get("e1001_home") not in ("lower", "gallery"):
+            raise ValueError("e1001_home must be lower or gallery")
+        wins = []
+        for s in new.get("content_windows") or []:
+            hm = power.parse_hhmm(s)
+            if not hm:
+                raise ValueError(f"content window must be HH:MM, not {s!r}")
+            wins.append(f"{hm[0]}:{hm[1]:02d}")
+        if not wins:
+            raise ValueError("need at least one content window")
+        new["content_windows"] = wins
+        if new["layout"] not in ("gallery", "lower"):
+            n = R.LAYOUTS[new["layout"]]
+            sl = new["slots"]
+            if len(sl) != n or len(set(sl)) != n or any(x not in R.CORNER_PANELS for x in sl):
+                raise ValueError(f"{new['layout']} needs {n} different panels from: {', '.join(R.CORNER_PANELS)}")
+            if new.get("slot_rotation") and len(new["slot_rotation"]) != n:
+                raise ValueError(f"slot_rotation needs {n} lists for the {new['layout']} layout")
         new["pinned"] = " ".join(str(new.get("pinned") or "").split())[:300]
         new["jcal_show"] = [x for x in dict.fromkeys(new.get("jcal_show") or []) if x in S.JCAL_OPTIONS]
         if new.get("live_sec"):
@@ -1155,15 +1364,19 @@ class H(BaseHTTPRequestHandler):
         cfg.update(new)
         S.TEAMS.update({k: tuple(v) for k, v in cfg.get("custom_teams", {}).items()})
         save_json(CONFIG_PATH, {k: v for k, v in cfg.items() if DEFAULTS.get(k) != v})
-        if moved:
+        if moved and not power.is_lower_cfg(cfg):
             start_sky()
         # data-shaping changes need a refetch; purely visual ones just a redraw
-        for name in (["shabbat"] if "jcal_show" in changed else []) if only_visual else \
-                ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
-            try:
-                board.take(name, force=name in ("weather",) and moved)
-            except Exception:
-                traceback.print_exc()
+        if power.is_lower_cfg(cfg):
+            if not only_visual:
+                board.refresh_lower(force=True)
+        else:
+            for name in (["shabbat"] if "jcal_show" in changed else []) if only_visual else \
+                    ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
+                try:
+                    board.take(name, force=name in ("weather",) and moved)
+                except Exception:
+                    traceback.print_exc()
         with board.cond:
             board.redraw("settings changed", major=True)
         return {"ok": True, "cfg": public_cfg(cfg)}
@@ -1212,7 +1425,11 @@ class H(BaseHTTPRequestHandler):
         wait = min(int(q.get("wait", "0") or 0), 30)
         vbat = float(q["vbat"]) if q.get("vbat") else None
         btn = q.get("btn")
-        mode = "live" if (vbat is None or vbat >= 3.80) else "sleep"
+        # X-Mode is the firmware's existing rule. Forcing sleep whenever a
+        # battery voltage is reported was cancelled (it needs a flash, and it
+        # was rejected). While mode is live the radio long-polls; X-Next is
+        # ignored. Coarser windows cut paints and upstream polls, not that radio.
+        mode = power.device_mode(vbat)
         dv = board.device
         dv.update(last_seen=time.time(), vbat=vbat, mode=mode, version=v,
                   rssi=int(q["rssi"]) if q.get("rssi") else dv.get("rssi"), polls=dv["polls"] + 1)
@@ -1254,7 +1471,7 @@ class H(BaseHTTPRequestHandler):
                 body = R.encode_reel([(board.final, 0, q.get("fresh") == "1")])
             headers = {
                 "X-Version": board.version, "X-Mode": mode,
-                "X-Next": 600 if mode == "sleep" else 0,
+                "X-Next": power.device_next_s(mode),
                 "X-Unread": int(board.unread),
                 "X-Chime": int(board.chime_version == board.version and v != board.version),
                 "X-Clean": 0,     # the server schedules full refreshes itself
@@ -1272,6 +1489,16 @@ class Server(ThreadingHTTPServer):
 
 def warm():
     board.snap["shopping"] = list_load()
+    now = time.time()
+    if power.is_lower_cfg(cfg):
+        board.refresh_lower(force=True)
+        board.beats["lower_news"] = power.local_hour_id(now)
+        board.beats["lower_sports"] = board.beats["lower_news"]
+        board.beats["day"] = time.strftime("%Y-%m-%d", time.localtime(now))
+        with board.cond:
+            board.redraw("startup", full=True)
+        threading.Thread(target=scheduler, daemon=True).start()
+        return
     board.snap["shul"] = SHUL.load()
     if board.snap["shul"] is None:          # nothing on disk yet: one fetch now, then weekly
         try:
@@ -1288,12 +1515,31 @@ def warm():
     board.take("brief")
     with board.cond:
         board.beats["main"] = int(time.time() // (max(1, cfg["interval_min"]) * 60))
+        lw = power.latest_window(now, cfg)
+        if lw:
+            board.beats["window"] = lw
+        board.beats["shabbat_edge"] = now
+        board.beats["alert"] = int(now // 1800)
+        board.beats["flight"] = power.local_hour_id(now)
+        board.beats["day"] = time.strftime("%Y-%m-%d", time.localtime(now))
+        if power.daily_home_cfg(cfg):
+            board.snap["teams"], board.snap["live"], board.snap["league"] = [], [], []
         board.redraw("startup", full=True)
     threading.Thread(target=scheduler, daemon=True).start()
 
 
 if __name__ == "__main__":
-    start_sky()
+    # The small board does not draw planes. Skip the ADS-B poller there.
+    if not power.is_lower_cfg(cfg):
+        start_sky()
+    else:
+        print("[power] E1001 lower face: Fox + WSJ tech, favorite scores at game time", flush=True)
+    if power.daily_home_cfg(cfg):
+        print("[power] E1003 daily thirds (no sports) windows "
+              + ", ".join(cfg.get("content_windows") or []), flush=True)
     print(f"quad board on {BIND}:{PORT} tz={os.environ['TZ']} notes={'on' if nb else 'off'}", flush=True)
+    print("[power] radio: X-Mode is unchanged (live while vbat is missing or >= 3.80V). "
+          "The firmware long-polls in live mode, so these windows do not sleep the radio "
+          "and a week per charge is not claimed.", flush=True)
     threading.Thread(target=warm, daemon=True).start()
     Server((BIND, PORT), H).serve_forever()

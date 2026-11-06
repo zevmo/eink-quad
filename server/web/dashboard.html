@@ -107,7 +107,14 @@ td:first-child{font-weight:600;white-space:nowrap}
     <section class="card">
       <h2>Layout</h2>
       <div class="grid3" style="margin-bottom:8px">
-        <label>Home screen<select name="layout" id="layoutSel"><option value="quad">2 × 2 (4 corners)</option><option value="six">3 × 2 (6 boxes)</option></select></label>
+        <label>Home screen<select name="layout" id="layoutSel">
+          <option value="quad">2 × 2 (4 corners)</option>
+          <option value="six">3 × 2 (6 boxes)</option>
+          <option value="nine">3 × 3 (E1003)</option>
+          <option value="thirds">Thirds (E1003 daily)</option>
+          <option value="lower">E1001 news / scores</option>
+          <option value="gallery">E1001 old gallery</option>
+        </select></label>
         <label>Rotate every (min, 0 = each update)<input type="number" name="rotate_min" min="0" max="240"></label>
         <label>Pin when candles within (h)<input type="number" name="rotate_pin_hours" min="0" max="24"></label>
       </div>
@@ -125,16 +132,20 @@ td:first-child{font-weight:600;white-space:nowrap}
         <label>Update every (min)<input type="number" name="interval_min" min="1" max="120"></label>
         <label>Plane corner every (min)<input type="number" name="sky_min" min="1" max="120"></label>
         <label>Full refresh every (min)<input type="number" name="full_every_min" min="0" max="1440"></label>
-        <label>Quiet hours<input name="quiet" placeholder="23-6"></label>
+        <label>Quiet hours<input name="quiet" placeholder="22-7"></label>
+        <label>Cadence<select name="cadence"><option value="windows">Daily windows</option><option value="interval">Every N minutes</option></select></label>
+        <label>Windows (local)<input name="content_windows" placeholder="7:30, 12:30, 18:30"></label>
+        <label>Small board<select name="e1001_home"><option value="lower">News, scores at game time</option><option value="gallery">Old rotating gallery</option></select></label>
         <label>Detail page timeout (s)<input type="number" name="page_timeout_s" min="20" max="3600"></label>
         <label>Live game refresh (min)<input type="number" name="live_min" min="1" max="30"></label>
         <label>Live scores every (s, 20+)<input type="number" name="live_sec" min="0" max="600" title="0 = use the minutes setting"></label>
       </div>
-      <label class="inline" style="margin-top:10px"><input type="checkbox" name="live_fast"> Refresh scores faster while a team is playing</label>
+      <label class="inline" style="margin-top:10px"><input type="checkbox" name="daily_home"> E1003 daily home: Shabbat, newsletter, weather, no sports and no Sunday slate</label>
+      <label class="inline" style="margin-top:10px"><input type="checkbox" name="live_fast"> Refresh scores faster while a team is playing (interval cadence only)</label>
       <label class="inline"><input type="checkbox" name="crisp"> Crisp mode: regular updates use a full refresh (brief flash, solid blacks)</label>
       <label class="inline"><input type="checkbox" name="gray"> Greyscale full refreshes (smooth text, ~6s instead of ~3.5s)</label>
       <div class="grid3" style="margin-top:8px"><label>Fast updates before a crisp one<input type="number" name="max_partials" min="0" max="50"></label></div>
-      <p class="note">Each update is a partial refresh of only the corners that changed (no flashing). The full refresh flashes once to wipe ghosting. Quiet hours pause updates, e.g. <b>23-6</b>.</p>
+      <p class="note">Daily windows (default <b>7:30, 12:30, 18:30</b> New York) refresh the big board. The small board updates news hourly in the daytime and scores hourly only while a favorite game is on or a final is still up. Quiet <b>22:00–07:00</b> is always kept on that format, even if the box above is an older <b>0-6</b>. Shabbat candle lighting, havdalah, and the Friday/Sunday market change still update. Partials only — a full flash is the rare ghost clean. The radio is a separate limit: while the board is in live mode (no battery reading, or about 3.80V and up) the firmware keeps Wi-Fi up and long-polls. These windows do not sleep it, and a week on one charge is not a promise.</p>
     </section>
 
     <section class="card">
@@ -273,9 +284,12 @@ function fillForm(cfg) {
 }
 
 let ROT = [];
-const LAYOUT_N = {quad: 4, six: 6};
+const LAYOUT_N = {quad: 4, six: 6, nine: 9, thirds: 7, lower: 1, gallery: 1};
 const LABELS = {4: ['Top left','Top right','Bottom left','Bottom right'],
-                6: ['Top left','Top middle','Top right','Bottom left','Bottom middle','Bottom right']};
+                6: ['Top left','Top middle','Top right','Bottom left','Bottom middle','Bottom right'],
+                7: ['Shabbat','Newsletter','Weather','News','Trips','Calendar','Sky'],
+                9: ['1','2','3','4','5','6','7','8','9'],
+                1: ['Screen']};
 function resizeRot(layout) {
   const n = LAYOUT_N[layout] || 4, used = new Set(ROT.flat());
   ROT = ROT.slice(0, n);
@@ -351,6 +365,7 @@ function render() {
   chips.push(['', `Page: ${PAGE_NAMES[S.page] || S.page}`]);
   if (S.note) chips.push(['warn', `Showing a note from ${S.note}`]);
   if (S.quiet_now) chips.push(['warn', 'Quiet hours']);
+  if (S.power && S.power.line) chips.push(['', S.power.line]);
   chips.push(['', `Updated ${hm(S.updated)}`]);
   document.getElementById('chips').innerHTML = chips.map(([c, t]) => `<span class="chip ${c}">${t}</span>`).join('');
   document.getElementById('pages').innerHTML = Object.entries(PAGE_NAMES).map(([k, v]) =>

@@ -88,6 +88,16 @@ On first boot the board opens a Wi-Fi setup portal named `QuadBoard-XXXX`. Join 
 
 `firmware/serial.ps1 -Port COM9` resets the board and prints its boot log.
 
+## Two fridge boards
+
+The big E1003 keeps one thirds face: Shabbat times, the newsletter, weather, news (no stock quotes on Friday or Saturday), trips, calendar, and the sky corner. It does not rotate and it does not take a sports or Sunday NFL layout. Those panels refresh around **7:30, 12:30 and 18:30** America/New_York, and also at candle lighting, havdalah, and the Friday/Sunday market change. **22:00–07:00** stays quiet.
+
+The small E1001 shows a static mix of the latest Fox News and WSJ tech headlines, hourly in the daytime. At favorite game time (Jets, Mets, Devils, Nets, Navy football, Rutgers basketball) it switches to scores, still hourly, with an **as of** time that moves only when the score or the headline actually changes. Finals stay up about six hours after the game, then the news comes back. An active game wins over an expired final. It does not show Shabbat, the newsletter, or a shop tile.
+
+Partials redraw only the regions that changed. A full flash is the occasional ghost clean, not every update.
+
+**Radio.** The firmware still chooses live vs sleep from `X-Mode`, and that rule was left alone: no battery reading, or about 3.80V and above, stays **live** and long-polls with Wi-Fi up. `X-Next` only matters in sleep, and it is still 600 seconds. Nothing here puts a charged board to sleep (that change was cancelled, and it would need a firmware flash). Less frequent paints cut how often a frame is sent; they do not by themselves make a charge last a week. That is not a claim.
+
 ## Notes
 
 - Times use the server's `TZ` (defaults to `America/New_York`).

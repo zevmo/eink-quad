@@ -229,8 +229,7 @@ def _clean(s):
     return re.sub(r"\s+", " ", s)
 
 
-def _fetch_feed(key):
-    label, url = WSJ_FEEDS[key]
+def _fetch_rss(label, url):
     r = requests.get(url, headers={"User-Agent": UA_BROWSER}, timeout=10)
     r.raise_for_status()
     root = ET.fromstring(r.content)
@@ -247,6 +246,38 @@ def _fetch_feed(key):
                             summary=_clean(it.findtext("description"))[:300],
                             link=(it.findtext("link") or "").strip()))
     return out
+
+
+def _fetch_feed(key):
+    label, url = WSJ_FEEDS[key]
+    return _fetch_rss(label, url)
+
+
+# Fox is only the small board's news column. The big board stays on WSJ.
+FOX_URLS = (
+    "https://moxie.foxnews.com/google-publisher/latest.xml",
+    "https://feeds.foxnews.com/foxnews/latest",
+)
+
+
+def fetch_fox(n=12):
+    last = None
+    for url in FOX_URLS:
+        try:
+            return _fetch_rss("Fox News", url)[:n]
+        except Exception as e:
+            last = e
+            print(f"[fox] {url}: {e}", flush=True)
+    if last:
+        raise last
+    return []
+
+
+def fetch_feed_key(key):
+    """One named WSJ feed (the small board asks for tech)."""
+    if key not in WSJ_FEEDS:
+        return []
+    return _fetch_feed(key)
 
 
 _feeds: dict[str, Cached] = {}
@@ -371,6 +402,13 @@ TEAMS = {
     "gators_fb": ("Gators", "football", "college-football", "57"),
     "gators_bb": ("Gators Hoops", "basketball", "mens-college-basketball", "57"),
     "gators_wbb": ("Gators WBB", "basketball", "womens-college-basketball", "57"),
+    # Fridge lower board (E1001). The small screen will not draw any other key.
+    "jets": ("Jets", "football", "nfl", "nyj"),
+    "mets": ("Mets", "baseball", "mlb", "nym"),
+    "devils": ("Devils", "hockey", "nhl", "nj"),
+    "nets": ("Nets", "basketball", "nba", "bkn"),
+    "navy_fb": ("Navy", "football", "college-football", "2426"),
+    "rutgers_bb": ("Rutgers", "basketball", "mens-college-basketball", "164"),
 }
 
 
