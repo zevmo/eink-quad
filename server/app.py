@@ -336,6 +336,7 @@ class Board:
         self.updated = 0.0
         self.beats = {}             # panel -> last beat index taken
         self.snap = {}              # panel -> data
+        self.finals = dict(st.get("finals") or {})   # event id -> {at, source} actual end of a final
         self.device = {"last_seen": 0, "vbat": None, "t": None, "rh": None, "rssi": None, "version": 0,
                        "mode": "live", "boots": 0, "polls": 0}
         self.log = []               # recent events for the dashboard
@@ -467,11 +468,16 @@ class Board:
         self.reel = R.encode_reel([(prev, 0, False)] + frames)
         if chime and cfg.get("chime") and not quiet_now():
             self.chime_version = self.version
-        save_json(STATE_PATH, {"version": self.version, "cycle": self.cycle, "sticky": self.sticky,
-                               "sticky_until": self.sticky_until})
+        self._persist()
         self.note_event(f"v{self.version} {why} ({len(frames)} frame{'s' if len(frames) != 1 else ''}"
                         f"{', full' if any(f[2] for f in frames) else ''})")
         self.cond.notify_all()
+
+    def _persist(self):
+        """version/sticky plus the final-end stamps. The stamps have to survive
+        a restart or a late game would be timed from the scheduled length."""
+        save_json(STATE_PATH, {"version": self.version, "cycle": self.cycle, "sticky": self.sticky,
+                               "sticky_until": self.sticky_until, "finals": self.finals})
 
     def redraw(self, why, full=False, major=False, clean=True):
         """Render from the current snapshot; commit if anything changed.
@@ -488,11 +494,15 @@ class Board:
         new_body = new.crop((0, R.px(R.HEAD_H), R.PW, R.PH))
         changed = ImageChops.logical_xor(old_body, new_body).getbbox() is not None
         self.render_ms = int((time.time() - t0) * 1000)
+        explicit_full = full
         period = power.full_every_min(cfg)
-        if clean:
-            full = full or self.force_full or (
-                period and time.time() - self.last_full > period * 60
-                and changed and not quiet_now())
+        # A ghost clean does not paint an unchanged frame (no timestamp redraw).
+        # The flag stays set and rides along with the next real change.
+        if clean and changed:
+            full = explicit_full or self.force_full or (
+                period and time.time() - self.last_full > period * 60 and not quiet_now())
+        elif not explicit_full:
+            full = False
         # Crisp mode full-flashes every scheduled update. The power format keeps
         # those partial and only full-flashes on the rare ghost clean, boot, or
         # an explicit full refresh. Photos on the legacy gallery still need a full.
@@ -501,7 +511,7 @@ class Board:
             full = True
         if changed and power.is_gallery_legacy(cfg) and self.page == "quad":
             full = True
-        if not changed and not full:
+        if not changed and not explicit_full:
             return
         if full:
             self.last_full = time.time()
@@ -521,9 +531,10 @@ class Board:
             self._commit([(f, 0, False) for f in regions], why)
 
     def refresh_lower(self, force=False, news=True, sports=True):
-        """Fetch the small board. Returns True when the content signature moved
-        (or the user asked for a refresh). Does not redraw; the caller does,
-        after lower_asof is set. An unchanged final leaves the signature alone."""
+        """Fetch the small board. Returns True only when the content signature
+        moved. A retry that sees the same final or the same headlines does not
+        move the as-of stamp and must not redraw. `force` only bypasses the
+        upstream cache; it is not itself a reason to paint."""
         import lower
         now = time.time()
         if news:
@@ -538,17 +549,18 @@ class Board:
             except Exception:
                 traceback.print_exc()
                 self.snap.setdefault("teams", [])
+        power.stamp_rows(self.snap.get("teams") or [], now, self.finals, lookup=S.final_wallclock)
+        self._persist()
         bundle = self.snap.get("lower_news") or {}
         sig = power.content_signature(self.snap.get("teams") or [], now,
                                       bundle.get("fox") or [], bundle.get("tech") or [])
         moved = sig != self.snap.get("lower_sig")
-        if moved or force:
+        if moved:
             self.snap["lower_sig"] = sig
             self.snap["lower_asof"] = now
-            face = sig[0] if sig else "news"
-            if moved:
-                self.note_event(f"lower face {face}")
-        return moved or force
+            self.note_event(f"lower face {sig[0] if sig else 'news'}")
+            self._persist()
+        return moved
 
     def _lower_sig_moved(self, now):
         """Hold expired, or a game started, using rows we already have. No network."""
@@ -579,33 +591,13 @@ class Board:
                 self.beats["lower_sports"] = hour
         elif self._lower_sig_moved(now):
             paint = True
-        # A midnight ghost-clean waits until daytime. Quiet hours stay dark
-        # unless the score/news signature actually moved.
-        if not paint and (not self.force_full or quiet_now(now)):
+        # Same final / same headlines: do not paint, even if a ghost-clean is due.
+        # That clean rides on the next real change. Quiet hours stay dark unless
+        # the signature moved (a hold expired, or a game started).
+        if not paint:
             return
         with self.cond:
             self.redraw("lower update", major=False)
-
-    def _maybe_alerts(self, now):
-        """Severe weather should not wait for the next window. Temperature-only
-        changes are put back so they don't ride along on a Shabbat redraw."""
-        slot = int(now // 1800)
-        if self.beats.get("alert") == slot:
-            return False
-        self.beats["alert"] = slot
-        old = self.snap.get("weather")
-        old_sig = tuple((a[0], a[2]) for a in (getattr(old, "alerts", None) or [])[:4])
-        try:
-            self.take("weather")
-        except Exception:
-            traceback.print_exc()
-            return False
-        new = self.snap.get("weather")
-        new_sig = tuple((a[0], a[2]) for a in (getattr(new, "alerts", None) or [])[:4])
-        if new_sig == old_sig:
-            self.snap["weather"] = old
-            return False
-        return True
 
     def _tick_windows(self, now):
         """Big board: three local windows, plus Shabbat edges and a Friday/Sunday
@@ -629,9 +621,10 @@ class Board:
             for name in ("shabbat", "news"):
                 if name not in due:
                     due.append(name)
-        if self._maybe_alerts(now) and "weather" not in due:
-            due.append("weather")
-        if ical.airborne(self.snap.get("trips")):
+        # Nothing else runs before the day's first window or during quiet.
+        # Weather (and any alert inside it) arrives with the window. A flight
+        # already in the air may refresh the trips tile hourly after that.
+        if not quiet_now(now) and power.latest_window(now, cfg) and ical.airborne(self.snap.get("trips")):
             hid = power.local_hour_id(now)
             if self.beats.get("flight") != hid:
                 self.beats["flight"] = hid
@@ -854,9 +847,11 @@ class Board:
                 self.note_event("manual refresh")
         if b == 0:
             if power.is_lower_cfg(cfg):
-                self.refresh_lower(force=True)
-                with self.cond:
-                    self.redraw("refresh button", major=True)
+                if self.refresh_lower(force=True):
+                    with self.cond:
+                        self.redraw("refresh button", major=True)
+                else:
+                    self.note_event("refresh unchanged")
                 return
             for name in ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
                 try:
@@ -1519,7 +1514,6 @@ def warm():
         if lw:
             board.beats["window"] = lw
         board.beats["shabbat_edge"] = now
-        board.beats["alert"] = int(now // 1800)
         board.beats["flight"] = power.local_hour_id(now)
         board.beats["day"] = time.strftime("%Y-%m-%d", time.localtime(now))
         if power.daily_home_cfg(cfg):
@@ -1528,7 +1522,15 @@ def warm():
     threading.Thread(target=scheduler, daemon=True).start()
 
 
-if __name__ == "__main__":
+def serve():
+    """Listen. QUAD_NO_WARM=1 skips upstream fetches and the scheduler so a
+    test can hit /api/device/poll without ESPN or the weather network."""
+    if os.environ.get("QUAD_NO_WARM"):
+        print("[test] QUAD_NO_WARM: no upstream fetch, no scheduler", flush=True)
+        with board.cond:
+            board.redraw("startup", full=True)
+        Server((BIND, PORT), H).serve_forever()
+        return
     # The small board does not draw planes. Skip the ADS-B poller there.
     if not power.is_lower_cfg(cfg):
         start_sky()
@@ -1543,3 +1545,7 @@ if __name__ == "__main__":
           "and a week per charge is not claimed.", flush=True)
     threading.Thread(target=warm, daemon=True).start()
     Server((BIND, PORT), H).serve_forever()
+
+
+if __name__ == "__main__":
+    serve()

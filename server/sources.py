@@ -431,6 +431,9 @@ class Game:
     our_logo: str = ""
     opp_logo: str = ""
     event_id: str = ""
+    status_name: str = ""       # ESPN STATUS_FINAL, STATUS_POSTPONED, ...
+    completed_at: float | None = None   # actual end (last play), not the scheduled start
+    completed_source: str = ""   # "espn" | "observed"
     odds: "Odds | None" = None
     situation: dict = field(default_factory=dict)   # live only: down/distance, outs, bases (scoreboard page)
 
@@ -504,14 +507,77 @@ def _parse_event(key, e, record=""):
         ls = t.get("logos") or []
         return (ls[0].get("href") if ls else t.get("logo")) or ""
     start = calendar.timegm(time.strptime(e["date"][:16], "%Y-%m-%dT%H:%M"))
-    return Game(team=label, abbr=(ours.get("team", {}).get("abbreviation") or ""),
-                opp=ot.get("abbreviation") or "TBD", opp_name=ot.get("shortDisplayName") or ot.get("name") or "TBD",
-                home=ours.get("homeAway") == "home", start=start, state=st.get("state", "pre"),
-                detail=st.get("shortDetail", ""), us=score(ours) if st.get("state") != "pre" else None,
-                them=score(theirs) if theirs and st.get("state") != "pre" else None,
-                tv=tv, record=record, note=note, time_tbd=(e.get("timeValid") is False), our_rank=rank(ours), opp_rank=rank(theirs) if theirs else None,
-                our_logo=logo(ours), opp_logo=logo(theirs) if ot.get("abbreviation") not in (None, "TBD") else "",
-                event_id=str(e.get("id", "")))
+    g = Game(team=label, abbr=(ours.get("team", {}).get("abbreviation") or ""),
+             opp=ot.get("abbreviation") or "TBD", opp_name=ot.get("shortDisplayName") or ot.get("name") or "TBD",
+             home=ours.get("homeAway") == "home", start=start, state=st.get("state", "pre"),
+             detail=st.get("shortDetail", ""), us=score(ours) if st.get("state") != "pre" else None,
+             them=score(theirs) if theirs and st.get("state") != "pre" else None,
+             tv=tv, record=record, note=note, time_tbd=(e.get("timeValid") is False), our_rank=rank(ours), opp_rank=rank(theirs) if theirs else None,
+             our_logo=logo(ours), opp_logo=logo(theirs) if ot.get("abbreviation") not in (None, "TBD") else "",
+             event_id=str(e.get("id", "")), status_name=st.get("name") or "")
+    # The schedule payload has the start, not the whistle. Summary meta.lastPlayWallClock
+    # is attached later; accept it here if a caller already merged it onto the event.
+    at = completion_from_summary(e) or completion_from_summary({"meta": comp.get("meta") or {},
+                                                                "header": {"competitions": [comp]}})
+    if at:
+        g.completed_at, g.completed_source = at, "espn"
+    return g
+
+
+def _iso_epoch_z(s):
+    """ESPN '2025-11-02T21:36:34Z' -> epoch. None if it is not a timestamp."""
+    if not s or "T" not in str(s):
+        return None
+    raw = str(s).replace("Z", "")[:19]
+    try:
+        return calendar.timegm(time.strptime(raw, "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        return None
+
+
+def completion_from_summary(payload) -> float | None:
+    """Actual end from an ESPN summary (or a schedule event that carries the same keys).
+
+    meta.lastPlayWallClock is the last play, which is the end of regulation or OT.
+    A scheduled start is not accepted here.
+    """
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("meta") or {}
+    at = _iso_epoch_z(meta.get("lastPlayWallClock"))
+    if at:
+        return at
+    for comp in ((payload.get("header") or {}).get("competitions") or []):
+        typ = ((comp.get("status") or {}).get("type") or {})
+        at = _iso_epoch_z(typ.get("completedDate") or typ.get("completed_date"))
+        if at:
+            return at
+    return None
+
+
+_wall_cache: dict[str, float] = {}
+
+
+def final_wallclock(row):
+    """ESPN summary last-play time for this final, or None. Successes are cached;
+    a failed call is not, so the next hourly poll can try again."""
+    g = getattr(row, "last", None)
+    eid = getattr(g, "event_id", "") if g else ""
+    key = getattr(row, "key", "")
+    if not eid or key not in TEAMS:
+        return None
+    if eid in _wall_cache:
+        return _wall_cache[eid]
+    _, sport, league, _tid = TEAMS[key]
+    try:
+        d = _espn(f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary", {"event": eid})
+        at = completion_from_summary(d)
+    except Exception as e:
+        print(f"[final] {key} {eid}: {e}", flush=True)
+        return None
+    if at:
+        _wall_cache[eid] = at
+    return at
 
 
 def _fetch_team(key):

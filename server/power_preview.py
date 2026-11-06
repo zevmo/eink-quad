@@ -143,6 +143,13 @@ def e1001_news(path, now):
     print("wrote", path)
 
 
+def ended(state, start, us, them, detail, opp, completed_at, source="espn"):
+    g = game(state, start, us, them, detail, opp)
+    g.completed_at = completed_at
+    g.completed_source = source
+    return g
+
+
 def e1001_sports(path, now, rows, asof):
     R.set_profile("e1001")
     ctx = R.Ctx(now=now, cfg={"layout": "lower", "cadence": "windows"},
@@ -168,9 +175,21 @@ if __name__ == "__main__":
     e1001_sports(os.path.join(OUT, "e1001-lower-sports.png"), sat, [
         lower_row("jets", live=game("in", sat - 5000, 17, 13, "Q3 6:02", "Patriots")),
         lower_row("devils", live=game("in", sat - 2400, 2, 1, "2nd 8:11", "Rangers")),
-        lower_row("mets", last=game("post", sat - 8 * H_, 5, 3, "Final", "Braves")),
+        lower_row("mets", last=ended("post", sat - 8 * H_, 5, 3, "Final", "Braves", sat - 3 * H_)),
     ], sat - 1800)
+    # Fixture: two finals still inside six hours of their actual end.
     e1001_sports(os.path.join(OUT, "e1001-lower-final.png"), sat, [
-        lower_row("navy_fb", last=game("post", sat - 5 * H_, 28, 21, "Final", "Army")),
-        lower_row("rutgers_bb", last=game("post", sat - 4 * H_, 71, 68, "Final", "Seton Hall")),
+        lower_row("navy_fb", last=ended("post", sat - 5 * H_, 28, 21, "Final", "Army", sat - 2 * H_)),
+        lower_row("rutgers_bb", last=ended("post", sat - 4 * H_, 71, 68, "Final", "Seton Hall", sat - 1 * H_)),
     ], sat - 3600)
+    # Revised: Navy ended in OT two hours ago (kickoff was 11h ago, so a
+    # scheduled-length hold would already have dropped it). Rutgers' last play
+    # was eight hours ago and must not be on the glass.
+    ot_rows = [
+        lower_row("navy_fb", last=ended("post", sat - 11 * H_, 31, 28, "Final/OT", "Army", sat - 2 * H_)),
+        lower_row("rutgers_bb", last=ended("post", sat - 11 * H_, 70, 68, "Final", "Seton Hall", sat - 8 * H_)),
+    ]
+    import power
+    face, shown = power.classify(ot_rows, sat)
+    assert face == "sports" and [r.key for r in shown] == ["navy_fb"], (face, [r.key for r in shown])
+    e1001_sports(os.path.join(OUT, "e1001-lower-final-ot.png"), sat, ot_rows, sat - 2 * H_)

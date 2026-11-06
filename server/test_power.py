@@ -17,10 +17,13 @@ def _at(y, mo, d, h, mi=0):
 
 
 class G:
-    def __init__(self, state, start, us=None, them=None, detail="", opp="OPP", home=True):
+    def __init__(self, state, start, us=None, them=None, detail="", opp="OPP", home=True,
+                 status_name="", completed_at=None, completed_source="", event_id=""):
         self.state, self.start = state, start
         self.us, self.them = us, them
         self.detail, self.opp, self.opp_name, self.home = detail, opp, opp, home
+        self.status_name, self.event_id = status_name, event_id
+        self.completed_at, self.completed_source = completed_at, completed_source
 
 
 class Row:
@@ -103,11 +106,13 @@ class PowerPolicy(unittest.TestCase):
     def test_scores_face(self):
         now = _at(2026, 11, 7, 20)
         live = Row("jets", live=G("in", now - 3600, 17, 13, "Q3 6:02", "LV"))
-        expired = Row("mets", last=G("post", now - 30 * 3600, 5, 3, "Final", "ATL"))
+        expired = Row("mets", last=G("post", now - 30 * 3600, 5, 3, "Final", "ATL",
+                                     completed_at=now - 30 * 3600, completed_source="espn"))
         face, shown = power.classify([expired, live], now)
         self.assertEqual(face, "sports")
         self.assertEqual([r.key for r in shown], ["jets"])
-        held = Row("devils", last=G("post", now - 5 * 3600, 2, 1, "Final", "NYR"))
+        held = Row("devils", last=G("post", now - 5 * 3600, 2, 1, "Final", "NYR",
+                                    completed_at=now - 2 * 3600, completed_source="espn"))
         face, shown = power.classify([held], now)
         self.assertEqual(face, "sports")
         self.assertEqual(shown[0].key, "devils")
@@ -120,7 +125,8 @@ class PowerPolicy(unittest.TestCase):
 
     def test_unchanged_final_signature(self):
         now = _at(2026, 11, 7, 22)
-        row = Row("jets", last=G("post", now - 4 * 3600, 21, 17, "Final", "NE"))
+        row = Row("jets", last=G("post", now - 4 * 3600, 21, 17, "Final", "NE",
+                                 completed_at=now - 3600, completed_source="espn"))
         fox, tech = ["Jets practice"], ["Chip report"]
         a = power.content_signature([row], now, fox, tech)
         b = power.content_signature([row], now + 50 * 60, fox, tech)
@@ -132,6 +138,24 @@ class PowerPolicy(unittest.TestCase):
         self.assertEqual(power.content_signature([row], later, fox, tech)[0], "news")
         self.assertEqual(power.content_signature([row], later, fox, tech),
                          power.content_signature([row], later + 600, fox, tech))
+
+    def test_ot_hold_follows_last_play_not_schedule(self):
+        """A game that ended in OT 2h ago is still up, even though start+typical
+        length+6h has already passed. A final whose last play was 7h ago is not,
+        even if the old scheduled window would still be open."""
+        now = _at(2026, 11, 8, 23, 30)
+        ot = Row("navy_fb", last=G("post", now - 11 * 3600, 28, 21, "Final/OT", "ARMY",
+                                   completed_at=now - 2 * 3600, completed_source="espn", event_id="ot"))
+        self.assertTrue(power.held_final(ot, now))
+        self.assertFalse(now < (now - 11 * 3600) + power.sport_len("navy_fb") + power.HOLD_S)
+        short = Row("mets", last=G("post", now - 8 * 3600, 3, 2, "Final", "ATL",
+                                   completed_at=now - 7 * 3600, completed_source="espn", event_id="reg"))
+        self.assertFalse(power.held_final(short, now))
+        self.assertTrue(now < (now - 8 * 3600) + power.sport_len("mets") + power.HOLD_S)
+        # ESPN end still holds when the game started a day earlier (resume / late).
+        late = Row("jets", last=G("post", now - 26 * 3600, 20, 17, "Final/OT", "NE",
+                                  completed_at=now - 3600, completed_source="espn", event_id="late"))
+        self.assertTrue(power.held_final(late, now))
 
 
 class Paint(unittest.TestCase):

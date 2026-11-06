@@ -38,10 +38,15 @@ FAVORITE_KEYS = tuple(k for k, *_ in FAVORITES)
 DAILY_SLOTS = ["shabbat", "newsletter", "weather", "news", "trips", "calendar", "sky"]
 SPORTS_PANELS = {"sports", "scoreboard", "league", "navy"}
 
-# Rough length of a game, then how long a final stays up after that.
+# How long a started-but-not-yet-flipped game still counts as on. Not the final hold.
 SPORT_LEN = {"football": 3.5 * 3600, "basketball": 2.5 * 3600, "hockey": 2.75 * 3600, "baseball": 3.25 * 3600}
+# Longest a game is allowed to have run when we only observed the final ourselves
+# and then lost that stamp. OT fits; the scheduled length does not cap a known ESPN end.
+MAX_PLAY = {"football": 6 * 3600, "basketball": 4 * 3600, "hockey": 4.5 * 3600, "baseball": 7 * 3600}
 HOLD_S = 6 * 3600
 SOON_S = 4 * 3600
+POSTPONED_NAMES = {"STATUS_POSTPONED", "STATUS_CANCELED", "STATUS_CANCELLED", "STATUS_DELAYED",
+                   "STATUS_SUSPENDED", "STATUS_FORFEIT", "STATUS_RAINDELAY"}
 
 WINDOWS_DEFAULT = ("7:30", "12:30", "18:30")
 QUIET_POWER = "22-7"          # always applied on the power format, local time
@@ -248,30 +253,120 @@ def sport_len(key) -> float:
     return SPORT_LEN.get(sport_of(key), 3 * 3600)
 
 
+def max_play(key) -> float:
+    return MAX_PLAY.get(sport_of(key), 6 * 3600)
+
+
+def is_postponed(g) -> bool:
+    """Postponed, cancelled, delayed, or suspended. Not a final and not game time."""
+    if g is None:
+        return False
+    name = (getattr(g, "status_name", "") or "").upper()
+    if name in POSTPONED_NAMES:
+        return True
+    detail = (getattr(g, "detail", "") or "").lower()
+    return any(w in detail for w in ("postpon", "cancel", "delayed", "suspend"))
+
+
 def is_active(row, now) -> bool:
     """Game time, including a start ESPN has not flipped to in yet.
-    A start still in the future is not game time."""
+    A start still in the future is not game time. A postponement is not either."""
     g = getattr(row, "live", None)
-    if g is not None and getattr(g, "state", "") == "in":
+    if g is not None and getattr(g, "state", "") == "in" and not is_postponed(g):
         return True
     nxt = getattr(row, "next", None)
-    if nxt is None or getattr(nxt, "state", "") == "post":
+    if nxt is None or is_postponed(nxt) or getattr(nxt, "state", "") == "post":
         return False
     start = getattr(nxt, "start", None) or 0
     return start <= now < start + sport_len(getattr(row, "key", ""))
 
 
+def _scored_final(g) -> bool:
+    return (g is not None and getattr(g, "state", "") == "post" and not is_postponed(g)
+            and getattr(g, "us", None) is not None and getattr(g, "them", None) is not None)
+
+
+def final_key(row, g) -> str:
+    eid = str(getattr(g, "event_id", "") or "")
+    if eid:
+        return eid
+    return f"{getattr(row, 'key', '')}:{int(getattr(g, 'start', 0) or 0)}:{getattr(g, 'opp', '')}"
+
+
+def stamp_final(row, now, store, lookup=None):
+    """Pin the actual end of a scored final onto the game and into `store`.
+
+    ESPN's last-play time wins and is kept. Otherwise the first time we see the
+    final is the end, and that stamp is not moved later (a restart reloads it).
+    A postponed game or a final with no score is not stamped.
+    """
+    g = getattr(row, "last", None)
+    if not _scored_final(g):
+        return
+    key = final_key(row, g)
+    rec = dict(store.get(key) or {})
+    if getattr(g, "completed_source", "") == "espn" and g.completed_at and rec.get("source") != "espn":
+        rec = {"at": float(g.completed_at), "source": "espn"}
+        store[key] = rec
+    if rec.get("source") != "espn" and lookup is not None:
+        try:
+            espn = lookup(row)
+        except Exception:
+            espn = None
+        if espn:
+            rec = {"at": float(espn), "source": "espn"}
+            store[key] = rec
+    if rec.get("source") == "espn" and rec.get("at"):
+        g.completed_at = float(rec["at"])
+        g.completed_source = "espn"
+        return
+    if rec.get("at"):
+        g.completed_at = float(rec["at"])
+        g.completed_source = rec.get("source") or "observed"
+        return
+    at = float(getattr(g, "completed_at", None) or now)
+    src = "espn" if getattr(g, "completed_source", "") == "espn" else "observed"
+    store[key] = {"at": at, "source": src}
+    g.completed_at = at
+    g.completed_source = src
+
+
+def stamp_rows(rows, now, store, lookup=None):
+    for row in rows or []:
+        stamp_final(row, now, store, lookup)
+    dead = [k for k, rec in list(store.items())
+            if now - float((rec or {}).get("at") or now) > 14 * 86400]
+    for k in dead:
+        store.pop(k, None)
+
+
+def hold_deadline(row, g):
+    """When this final leaves the glass, or None.
+
+    A known ESPN end (last play, including OT) gets a full 6h after that
+    instant, not after the scheduled length. An observed stamp is also 6h,
+    but not past start + max play + 6h, so losing state.json cannot keep a
+    long-finished game up by re-stamping 'now' on every boot.
+    """
+    if not _scored_final(g):
+        return None
+    at = getattr(g, "completed_at", None)
+    if not at:
+        return None
+    deadline = float(at) + HOLD_S
+    if (getattr(g, "completed_source", "") or "") == "observed":
+        cap = (getattr(g, "start", 0) or float(at)) + max_play(getattr(row, "key", "")) + HOLD_S
+        deadline = min(deadline, cap)
+    return deadline
+
+
 def held_final(row, now) -> bool:
-    """Final stays up until about 6h after the game should have ended."""
+    """Scored final still inside the 6h window after it actually ended."""
     if is_active(row, now):
         return False
     g = getattr(row, "last", None)
-    if g is None or getattr(g, "state", "") != "post":
-        return False
-    if getattr(g, "us", None) is None or getattr(g, "them", None) is None:
-        return False
-    start = getattr(g, "start", 0) or 0
-    return now < start + sport_len(getattr(row, "key", "")) + HOLD_S
+    deadline = hold_deadline(row, g)
+    return deadline is not None and now < deadline
 
 
 def _order(row) -> int:

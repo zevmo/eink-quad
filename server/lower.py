@@ -155,7 +155,9 @@ def _score_row(d, row, x, y, right, rh, big, now):
     kind = "LIVE" if active else "FINAL"
     score = f"{'' if g.us is None else g.us}–{'' if g.them is None else g.them}"
     who = ("vs " if getattr(g, "home", True) else "at ") + (getattr(g, "opp_name", None) or getattr(g, "opp", "") or "")
-    detail = "" if kind == "FINAL" else str(getattr(g, "detail", "") or "")
+    detail = str(getattr(g, "detail", "") or "")
+    if kind == "FINAL" and detail.strip().lower() in ("", "final"):
+        detail = ""
     sub = who if not detail else f"{who}  ·  {detail}"
     nf = R.F("cb", 32 if big else 22)
     sf = R.F("b", 40 if big else 26)
