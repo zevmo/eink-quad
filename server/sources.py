@@ -229,8 +229,7 @@ def _clean(s):
     return re.sub(r"\s+", " ", s)
 
 
-def _fetch_feed(key):
-    label, url = WSJ_FEEDS[key]
+def _fetch_rss(label, url):
     r = requests.get(url, headers={"User-Agent": UA_BROWSER}, timeout=10)
     r.raise_for_status()
     root = ET.fromstring(r.content)
@@ -247,6 +246,38 @@ def _fetch_feed(key):
                             summary=_clean(it.findtext("description"))[:300],
                             link=(it.findtext("link") or "").strip()))
     return out
+
+
+def _fetch_feed(key):
+    label, url = WSJ_FEEDS[key]
+    return _fetch_rss(label, url)
+
+
+# Fox is only the small board's news column. The big board stays on WSJ.
+FOX_URLS = (
+    "https://moxie.foxnews.com/google-publisher/latest.xml",
+    "https://feeds.foxnews.com/foxnews/latest",
+)
+
+
+def fetch_fox(n=12):
+    last = None
+    for url in FOX_URLS:
+        try:
+            return _fetch_rss("Fox News", url)[:n]
+        except Exception as e:
+            last = e
+            print(f"[fox] {url}: {e}", flush=True)
+    if last:
+        raise last
+    return []
+
+
+def fetch_feed_key(key):
+    """One named WSJ feed (the small board asks for tech)."""
+    if key not in WSJ_FEEDS:
+        return []
+    return _fetch_feed(key)
 
 
 _feeds: dict[str, Cached] = {}
@@ -371,6 +402,13 @@ TEAMS = {
     "gators_fb": ("Gators", "football", "college-football", "57"),
     "gators_bb": ("Gators Hoops", "basketball", "mens-college-basketball", "57"),
     "gators_wbb": ("Gators WBB", "basketball", "womens-college-basketball", "57"),
+    # Fridge lower board (E1001). The small screen will not draw any other key.
+    "jets": ("Jets", "football", "nfl", "nyj"),
+    "mets": ("Mets", "baseball", "mlb", "nym"),
+    "devils": ("Devils", "hockey", "nhl", "nj"),
+    "nets": ("Nets", "basketball", "nba", "bkn"),
+    "navy_fb": ("Navy", "football", "college-football", "2426"),
+    "rutgers_bb": ("Rutgers", "basketball", "mens-college-basketball", "164"),
 }
 
 
@@ -393,6 +431,9 @@ class Game:
     our_logo: str = ""
     opp_logo: str = ""
     event_id: str = ""
+    status_name: str = ""       # ESPN STATUS_FINAL, STATUS_POSTPONED, ...
+    completed_at: float | None = None   # actual end (last play), not the scheduled start
+    completed_source: str = ""   # "espn" | "observed"
     odds: "Odds | None" = None
     situation: dict = field(default_factory=dict)   # live only: down/distance, outs, bases (scoreboard page)
 
@@ -466,14 +507,77 @@ def _parse_event(key, e, record=""):
         ls = t.get("logos") or []
         return (ls[0].get("href") if ls else t.get("logo")) or ""
     start = calendar.timegm(time.strptime(e["date"][:16], "%Y-%m-%dT%H:%M"))
-    return Game(team=label, abbr=(ours.get("team", {}).get("abbreviation") or ""),
-                opp=ot.get("abbreviation") or "TBD", opp_name=ot.get("shortDisplayName") or ot.get("name") or "TBD",
-                home=ours.get("homeAway") == "home", start=start, state=st.get("state", "pre"),
-                detail=st.get("shortDetail", ""), us=score(ours) if st.get("state") != "pre" else None,
-                them=score(theirs) if theirs and st.get("state") != "pre" else None,
-                tv=tv, record=record, note=note, time_tbd=(e.get("timeValid") is False), our_rank=rank(ours), opp_rank=rank(theirs) if theirs else None,
-                our_logo=logo(ours), opp_logo=logo(theirs) if ot.get("abbreviation") not in (None, "TBD") else "",
-                event_id=str(e.get("id", "")))
+    g = Game(team=label, abbr=(ours.get("team", {}).get("abbreviation") or ""),
+             opp=ot.get("abbreviation") or "TBD", opp_name=ot.get("shortDisplayName") or ot.get("name") or "TBD",
+             home=ours.get("homeAway") == "home", start=start, state=st.get("state", "pre"),
+             detail=st.get("shortDetail", ""), us=score(ours) if st.get("state") != "pre" else None,
+             them=score(theirs) if theirs and st.get("state") != "pre" else None,
+             tv=tv, record=record, note=note, time_tbd=(e.get("timeValid") is False), our_rank=rank(ours), opp_rank=rank(theirs) if theirs else None,
+             our_logo=logo(ours), opp_logo=logo(theirs) if ot.get("abbreviation") not in (None, "TBD") else "",
+             event_id=str(e.get("id", "")), status_name=st.get("name") or "")
+    # The schedule payload has the start, not the whistle. Summary meta.lastPlayWallClock
+    # is attached later; accept it here if a caller already merged it onto the event.
+    at = completion_from_summary(e) or completion_from_summary({"meta": comp.get("meta") or {},
+                                                                "header": {"competitions": [comp]}})
+    if at:
+        g.completed_at, g.completed_source = at, "espn"
+    return g
+
+
+def _iso_epoch_z(s):
+    """ESPN '2025-11-02T21:36:34Z' -> epoch. None if it is not a timestamp."""
+    if not s or "T" not in str(s):
+        return None
+    raw = str(s).replace("Z", "")[:19]
+    try:
+        return calendar.timegm(time.strptime(raw, "%Y-%m-%dT%H:%M:%S"))
+    except Exception:
+        return None
+
+
+def completion_from_summary(payload) -> float | None:
+    """Actual end from an ESPN summary (or a schedule event that carries the same keys).
+
+    meta.lastPlayWallClock is the last play, which is the end of regulation or OT.
+    A scheduled start is not accepted here.
+    """
+    if not isinstance(payload, dict):
+        return None
+    meta = payload.get("meta") or {}
+    at = _iso_epoch_z(meta.get("lastPlayWallClock"))
+    if at:
+        return at
+    for comp in ((payload.get("header") or {}).get("competitions") or []):
+        typ = ((comp.get("status") or {}).get("type") or {})
+        at = _iso_epoch_z(typ.get("completedDate") or typ.get("completed_date"))
+        if at:
+            return at
+    return None
+
+
+_wall_cache: dict[str, float] = {}
+
+
+def final_wallclock(row):
+    """ESPN summary last-play time for this final, or None. Successes are cached;
+    a failed call is not, so the next hourly poll can try again."""
+    g = getattr(row, "last", None)
+    eid = getattr(g, "event_id", "") if g else ""
+    key = getattr(row, "key", "")
+    if not eid or key not in TEAMS:
+        return None
+    if eid in _wall_cache:
+        return _wall_cache[eid]
+    _, sport, league, _tid = TEAMS[key]
+    try:
+        d = _espn(f"https://site.api.espn.com/apis/site/v2/sports/{sport}/{league}/summary", {"event": eid})
+        at = completion_from_summary(d)
+    except Exception as e:
+        print(f"[final] {key} {eid}: {e}", flush=True)
+        return None
+    if at:
+        _wall_cache[eid] = at
+    return at
 
 
 def _fetch_team(key):

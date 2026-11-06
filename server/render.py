@@ -618,11 +618,15 @@ def panel_news(ctx: Ctx, size):
     w, h = size
     y = 6
     shab = is_shabbat_day(ctx.now)
-    qs = [] if shab else ctx.quotes[:6 if w >= 300 else 3]   # markets never on Fri-Sat
-    if shab:   # no TV on Shabbat: a clearly labelled headline board, refreshed hourly
+    stable = (ctx.cfg.get("cadence") or "windows") == "windows"
+    qs = ctx.quotes[:6 if w >= 300 else 3] if show_markets(ctx) else []   # markets never on Fri-Sat
+    if shab:   # no TV on Shabbat: a clearly labelled headline board
         text(d, (12, 6), "NEWS", F("cb", 22))
         newest = max((hd.published for hd in ctx.heads), default=0)
-        sub = "updates hourly" + (f" · latest {hm(newest)}" if newest else "")
+        if stable:
+            sub = f"as of {hm(newest)}" if newest else "markets off today"
+        else:
+            sub = "updates hourly" + (f" · latest {hm(newest)}" if newest else "")
         text(d, (w - 12, 9), sub, F("csb", 16), anchor="ra")
         d.line((10, 36, w - 10, 36), fill=INK, width=2)
         y = 44
@@ -655,7 +659,9 @@ def panel_news(ctx: Ctx, size):
     if cur:
         pages.append(cur)
     pages = pages[:ctx.cfg.get("news_pages", 4)]
-    pi = (int(ctx.now // 3600) if shab else ctx.cycle) % len(pages)   # Shabbat: one page per hour
+    # Windows cadence keeps the latest page. Cycling headlines, or flipping the
+    # Shabbat page every hour, would repaint a board whose words did not change.
+    pi = 0 if stable else (int(ctx.now // 3600) if shab else ctx.cycle) % len(pages)
     pg = pages[pi]
     for lines in pg:
         d.rectangle((12, y + 7, 18, y + 13), fill=INK)
@@ -664,7 +670,7 @@ def panel_news(ctx: Ctx, size):
             y += lh
         y += 5
     # page dots
-    if len(pages) > 1 and not qs and not shab:
+    if len(pages) > 1 and not qs and not shab and not stable:
         cx = w - 12 - (len(pages) - 1) * 10
         dy = 63 if qs else 6
         d.rectangle((cx - 8, dy - 5, w - 4, dy + 5), fill=PAPER)
@@ -1725,7 +1731,9 @@ def panel_newsletter(ctx: Ctx, size):
     if not blocks:
         _calm(d, w, 50, "Newsletter loads Thursday", "Fetched Thursdays 8 PM ET")
         return c
-    y, nb, last = _shul_flow(d, blocks, 12, 36, w - 4, h - 22, F("cm", 15), lines_per=2)
+    big = w >= 400 and h >= 400
+    y, nb, last = _shul_flow(d, blocks, 12, 36, w - 4, h - 22,
+                             F("cm", 18 if big else 15), lines_per=4 if big else 2)
     left = sum(len(i) for _, i in blocks[nb:]) + (len(blocks[nb - 1][1]) - last if nb else 0)
     if left > 0:
         text(d, (w - 12, h - 6), f"+{left} more  ·  newsletter page", F("cm", 13), anchor="rd")
@@ -1882,9 +1890,15 @@ def header(ctx: Ctx):
         text(d, (x, HEAD_H / 2), sep, f, fill=PAPER, anchor="lm")
         s = f"Inside {ctx.indoor_f:.0f}°" + (f" {ctx.indoor_rh:.0f}%" if ctx.indoor_rh is not None else "")
         text(d, (x, HEAD_H / 2), s, f, fill=PAPER, anchor="rm")
-    # Candles / Havdalah in the header on screens without the full Shabbat panel
+    # Candles / Havdalah in the header only when the Shabbat panel isn't already on screen.
     sh = ctx.shabbat
-    if sh is not None and ctx.page == "quad" and not home_mode(ctx).startswith("shabbat"):
+    on_home = []
+    if ctx.page == "quad":
+        try:
+            on_home = home_layout(ctx)[1]
+        except Exception:
+            on_home = []
+    if sh is not None and ctx.page == "quad" and "shabbat" not in on_home and not str(home_mode(ctx)).startswith("shabbat"):
         bits = [f"{lab} {_sday(ts).split()[0]} {hm(ts)}" for lab, ts in
                 (("Candles", getattr(sh, "candles", None)), ("Havdalah", getattr(sh, "havdalah", None))) if ts]
         if bits:
@@ -1935,18 +1949,22 @@ def strip(ctx: Ctx):
 
 
 def _next_up(ctx):
-    for r in ctx.teams:
-        if r.live:
-            return f"{r.label} playing now: {_gsc(r.live)} {r.live.detail}"
-    for r in ctx.teams:
-        if r.next and r.next.start - ctx.now < 12 * 3600:
-            return f"{r.label} {when(r.next.start, r.next.time_tbd).lower()} vs {r.next.opp_name}"
+    import power
+    # The daily face has no sports tiles; don't let a stale team row own the strip.
+    if not power.daily_home_cfg(ctx.cfg):
+        for r in ctx.teams:
+            if r.live:
+                return f"{r.label} playing now: {_gsc(r.live)} {r.live.detail}"
+        for r in ctx.teams:
+            if r.next and r.next.start - ctx.now < 12 * 3600:
+                return f"{r.label} {when(r.next.start, r.next.time_tbd).lower()} vs {r.next.opp_name}"
     if ctx.heads:
         return ctx.heads[0].title
     return ""
 
 
-LAYOUTS = {"quad": 4, "six": 6, "nine": 9, "thirds": 7, "gallery": 1}   # gallery = E1001 living screen (gallery.py)
+LAYOUTS = {"quad": 4, "six": 6, "nine": 9, "thirds": 7, "gallery": 1, "lower": 1}
+# gallery = legacy E1001 screensaver (only if e1001_home=gallery). lower = static news/scores.
 GRID_DIMS = {"quad": (2, 2), "six": (3, 2), "nine": (3, 3)}
 
 
@@ -1986,8 +2004,16 @@ def nfl_slate_on(ctx) -> bool:
                or (g.state == "pre" and (g.start < day1 or g.start - ctx.now <= 3 * 3600)) for g in ctx.league)
 
 
+def show_markets(ctx) -> bool:
+    """Index quotes stay off the glass on Friday and Saturday (New York)."""
+    return not is_shabbat_day(ctx.now)
+
+
 def home_mode(ctx) -> str:
     """Zev's layout matrix (thirds/E1003 only). Markets NEVER on Fri-Sat or in a game mode.
+
+    daily_home (default on thirds) pins one face and never takes the NFL slate
+    or a live-score takeover. Set daily_home false to get the matrix below.
        shabbat       Fri-Sat, nothing live        Shabbat | weather top; big newsletter 2/3 x 2/3; hourly news + my teams right
        shabbat_live  Fri-Sat, followed team live  Shabbat/weather/newsletter column | scores 2/3
        shabbat_navy  Sat, Navy football live      as shabbat_live, but Navy highlights + hourly news stay on
@@ -1995,6 +2021,9 @@ def home_mode(ctx) -> str:
        live          other days, team live        weather + my finals column | live games 2/3
        weekday       otherwise                    weather/markets/trips column | my teams 2/3
     Non-Shabbat modes carry candle lighting / Havdalah in the header."""
+    import power
+    if power.daily_home_cfg(ctx.cfg):
+        return "daily"
     if layout_of(ctx.cfg) != "thirds" or not ctx.cfg.get("smart_home", True):
         return "fixed"
     live = game_day(ctx)
@@ -2019,6 +2048,13 @@ MODE_SLOTS = {
 
 def home_layout(ctx):
     """(boxes, slot names) for the home screen, re-picked every render."""
+    import power
+    if power.daily_home_cfg(ctx.cfg):
+        # Fixed daily faces. Sports, the NFL slate, and the calendar never get a slot.
+        # Friday and Saturday: the newsletter is the majority of the body.
+        if is_shabbat_day(ctx.now):
+            return slot_boxes("daily_shabbat"), list(power.DAILY_SHABBAT)
+        return slot_boxes("daily_weekday"), list(power.DAILY_SLOTS)
     mode = home_mode(ctx)
     if mode in MODE_SLOTS:
         return slot_boxes("thirds_" + mode), list(MODE_SLOTS[mode])
@@ -2027,6 +2063,30 @@ def home_layout(ctx):
 
 def slot_boxes(layout="quad"):
     """Slot rectangles in layout units."""
+    if layout in ("daily_weekday", "daily_shabbat"):
+        x1, x2 = W // 3, 2 * W // 3
+        ch = (H - GRID_Y) // 3
+        y0, y1, y2, y3 = GRID_Y, GRID_Y + ch, GRID_Y + 2 * ch, H
+        if layout == "daily_shabbat":
+            # Newsletter is the left two-thirds, full height (majority of the body).
+            # Right column: Shabbat times, weather, news. No markets (the news
+            # panel already hides quotes on Friday and Saturday). No calendar.
+            return [
+                (0, y0, x2, y3),
+                (x2, y0, W, y1),
+                (x2, y1, W, y2),
+                (x2, y2, W, y3),
+            ]
+        # Weekday thirds: Shabbat and a tall newsletter on the left, weather and
+        # news across the top and middle. Next Trip takes the whole bottom band
+        # where the overhead-radar tile used to sit. No sports, no calendar.
+        return [
+            (0, y0, x1, y1),
+            (x1, y0, W, y1),
+            (0, y1, x1, y3),
+            (x1, y1, W, y2),
+            (x1, y2, W, y3),
+        ]
     if layout.startswith("thirds_"):
         x1, x2 = W // 3, 2 * W // 3
         ch = (H - GRID_Y) // 3
@@ -2440,6 +2500,17 @@ def compose_gray(ctx: Ctx) -> Image.Image:
     if is_gallery(ctx):
         import gallery
         return gallery.compose_gray(ctx)
+    if is_lower(ctx):
+        import lower
+        AA = True
+        try:
+            img = lower.compose(ctx)
+        finally:
+            AA = False
+        q = img.point(lambda v: 0 if v < 60 else 85 if v < 140 else 170 if v < 215 else 255)
+        if ctx.cfg.get("dark", False):
+            q = q.point(lambda v: 255 - v)
+        return q
     AA = True
     try:
         img = _compose_l(ctx)
@@ -2475,14 +2546,37 @@ def pack_gray(gray: Image.Image) -> bytes:
     return pack4(gray) if GRAY_LEVELS == 16 else pack2(gray)
 
 
+def is_lower(ctx) -> bool:
+    import power
+    return power.is_lower_cfg(ctx.cfg) and ctx.page not in DETAILS
+
+
 def is_gallery(ctx) -> bool:
-    return layout_of(ctx.cfg) == "gallery" and ctx.page not in DETAILS
+    import power
+    return power.is_gallery_legacy(ctx.cfg) and ctx.page not in DETAILS
+
+
+def paint_layout(cfg, now=None) -> str:
+    """Layout key for region diffs. The lower face is one screen, not gallery slots.
+    The daily board's boxes change on Friday and Saturday, so the diff has to
+    use that face rather than the old 7-slot thirds grid."""
+    import power
+    if power.is_lower_cfg(cfg):
+        return "lower"
+    if power.daily_home_cfg(cfg):
+        if is_shabbat_day(time.time() if now is None else now):
+            return "daily_shabbat"
+        return "daily_weekday"
+    return layout_of(cfg)
 
 
 def compose(ctx: Ctx) -> Image.Image:
     if is_gallery(ctx):
         import gallery
         return gallery.dither(gallery.compose(ctx), 2).convert("1")
+    if is_lower(ctx):
+        import lower
+        return to1(lower.compose(ctx), invert=ctx.cfg.get("dark", False))
     if ctx.page in DETAILS:
         img = compose_page(ctx, ctx.page)
     else:
@@ -2532,6 +2626,10 @@ def region_frames(prev: Image.Image, new: Image.Image, layout="quad"):
     slot), so a change in two corners refreshes two small windows instead of
     one window spanning the whole screen. Each partial costs ~1s whatever its
     size, but a smaller window ghosts less."""
+    if layout in ("lower", "gallery"):
+        if ImageChops.logical_xor(prev, new).getbbox() is None:
+            return []
+        return [new]
     boxes = [tuple(px(v) for v in b) for b in
              [(0, 0, W, HEAD_H), (0, HEAD_H, W, GRID_Y)] + slot_boxes(layout)]
     frames = []
