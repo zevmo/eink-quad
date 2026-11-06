@@ -2078,15 +2078,14 @@ def slot_boxes(layout="quad"):
                 (x2, y2, W, y3),
             ]
         # Weekday thirds: Shabbat and a tall newsletter on the left, weather and
-        # news wider across the space the calendar used to occupy, trips and sky
-        # along the bottom. No sports column.
+        # news across the top and middle. Next Trip takes the whole bottom band
+        # where the overhead-radar tile used to sit. No sports, no calendar.
         return [
             (0, y0, x1, y1),
             (x1, y0, W, y1),
             (0, y1, x1, y3),
             (x1, y1, W, y2),
-            (x1, y2, x2, y3),
-            (x2, y2, W, y3),
+            (x1, y2, W, y3),
         ]
     if layout.startswith("thirds_"):
         x1, x2 = W // 3, 2 * W // 3

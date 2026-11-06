@@ -449,6 +449,7 @@ class FramesAndNight(unittest.TestCase):
         self.assertIn("news", got)
         self.assertNotIn("sports", got)
         self.assertNotIn("calendar", got)
+        self.assertNotIn("sky", got)
 
     def test_live_scores_poll_every_15_minutes(self):
         import lower
@@ -515,6 +516,7 @@ class FramesAndNight(unittest.TestCase):
             self.assertIn("newsletter", names)
             self.assertIn("weather", names)
             self.assertNotIn("calendar", names)
+            self.assertNotIn("sky", names)
             fri = R.Ctx(now=_at(2026, 11, 6, 12), cfg=saved)
             fnames = R.home_layout(fri)[1]
             self.assertEqual(fnames, power.DAILY_SHABBAT)
@@ -627,6 +629,8 @@ class DevicePoll(unittest.TestCase):
                     self.assertIn("weather", state["cfg"]["slots"])
                     self.assertIn("no sports", state["power"]["line"])
                     self.assertNotIn("calendar", state["cfg"]["slots"])
+                    self.assertNotIn("sky", state["cfg"]["slots"])
+                    self.assertIn("trips", state["cfg"]["slots"])
                 else:
                     self.assertEqual(state["cfg"]["layout"], "gallery")
                     self.assertEqual(state["cfg"]["e1001_home"], "lower")

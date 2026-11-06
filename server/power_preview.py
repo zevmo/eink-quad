@@ -107,7 +107,7 @@ def e1003(path, now):
     assert g.size == (1872, 1404), g.size
     assert R.home_mode(ctx) == "daily"
     boxes, names = R.home_layout(ctx)
-    assert "sports" not in names and "calendar" not in names, names
+    assert "sports" not in names and "calendar" not in names and "sky" not in names, names
     assert "weather" in names and "shabbat" in names and "newsletter" in names
     if R.is_shabbat_day(now):
         nl = boxes[names.index("newsletter")]

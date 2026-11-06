@@ -174,6 +174,7 @@ class Paint(unittest.TestCase):
         self.assertEqual(names, power.DAILY_SLOTS)
         self.assertNotIn("sports", names)
         self.assertNotIn("calendar", names)
+        self.assertNotIn("sky", names)
         self.assertNotIn("scoreboard", names)
         self.assertNotIn("league", names)
         self.assertNotIn("shopping", names)
@@ -204,7 +205,10 @@ class Paint(unittest.TestCase):
         wboxes, wnames = R.home_layout(R.Ctx(now=wed, cfg={"layout": "thirds", "daily_home": True}))
         self.assertIn("weather", wnames)
         self.assertNotIn("calendar", wnames)
+        self.assertNotIn("sky", wnames)
         self.assertEqual(wnames, power.DAILY_SLOTS)
+        trip = wboxes[wnames.index("trips")]
+        self.assertEqual(trip[2], R.W)  # Next Trip takes the old radar column too
 
     def test_one_game_fills_the_panel(self):
         R.set_profile("e1001")

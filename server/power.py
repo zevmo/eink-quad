@@ -1,9 +1,9 @@
 """Power-format policy for the two fridge boards. Pure functions, no I/O.
 
 Big E1003 (layout thirds, daily_home default on): one stable thirds face —
-Shabbat, newsletter, weather, news (markets off Fri–Sat), trips, sky.
-No calendar tile and no sports. On Friday and Saturday the newsletter
-takes the majority of the body.
+Shabbat, newsletter, weather, news (markets off Fri–Sat), and his next trip.
+No calendar, no sports, and no overhead-plane radar. On Friday and Saturday
+the newsletter takes the majority of the body.
 No sports and no NFL slate. Content refreshes at local windows (default
 7:30, 12:30, 18:30) and at Shabbat transitions, not on a short interval.
 
@@ -35,9 +35,9 @@ FAVORITES = (
 )
 FAVORITE_KEYS = tuple(k for k, *_ in FAVORITES)
 
-# Weekday thirds, no calendar and no sports. Order matches daily_weekday boxes.
-# Shopping stays off this face. Shabbat swaps to DAILY_SHABBAT (newsletter majority).
-DAILY_SLOTS = ["shabbat", "weather", "newsletter", "news", "trips", "sky"]
+# Weekday thirds. Order matches daily_weekday boxes. No calendar, no sports,
+# no overhead sky. Shabbat swaps to DAILY_SHABBAT (newsletter majority).
+DAILY_SLOTS = ["shabbat", "weather", "newsletter", "news", "trips"]
 DAILY_SHABBAT = ["newsletter", "shabbat", "weather", "news"]
 LIVE_POLL_S = 15 * 60
 SPORTS_PANELS = {"sports", "scoreboard", "league", "navy"}

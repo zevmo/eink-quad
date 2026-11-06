@@ -154,7 +154,7 @@ def nav_pages(c=None):
     if power.is_lower_cfg(c):
         return ["quad"]
     if power.daily_home_cfg(c):
-        return [p for p in PAGES if p not in ("sports", "scoreboard", "shopping", "calendar")]
+        return [p for p in PAGES if p not in ("sports", "scoreboard", "shopping", "calendar", "sky")]
     return list(PAGES)
 
 
@@ -619,11 +619,14 @@ class Board:
             w = power.due_window(self.beats.get("window"), now, cfg)
             if w is not None:
                 self.beats["window"] = w
-                for name in ("weather", "news", "shabbat", "trips", "sky", "brief"):
+                for name in ("weather", "news", "shabbat", "trips", "brief"):
                     if name not in due:
                         due.append(name)
-                if not power.daily_home_cfg(cfg) and "calendar" not in due:
-                    due.append("calendar")
+                if not power.daily_home_cfg(cfg):
+                    # Overhead radar and the iCal calendar only when that face is on.
+                    for name in ("sky", "calendar"):
+                        if name not in due:
+                            due.append(name)
                 with self.cond:
                     self.cycle += 1
         edge = power.shabbat_edge(self.beats.get("shabbat_edge") or 0, self.snap.get("shabbat"), now)
@@ -1514,13 +1517,17 @@ def warm():
             board.take("shul", force=True)
         except Exception:
             traceback.print_exc()
-    for name in ("weather", "news", "sports", "sky", "shabbat", "calendar", "trips"):
+    names = ["weather", "news", "sports", "shabbat", "calendar", "trips"]
+    if not power.daily_home_cfg(cfg):
+        names.append("sky")
+    for name in names:
         try:
             board.take(name)
         except Exception:
             traceback.print_exc()
-    time.sleep(8)          # let the sky poller land its first answer
-    board.take("sky")
+    if not power.daily_home_cfg(cfg):
+        time.sleep(8)          # let the sky poller land its first answer
+        board.take("sky")
     board.take("brief")
     with board.cond:
         board.beats["main"] = int(time.time() // (max(1, cfg["interval_min"]) * 60))
@@ -1545,10 +1552,11 @@ def serve():
             board.redraw("startup", full=True)
         Server((BIND, PORT), H).serve_forever()
         return
-    # The small board does not draw planes. Skip the ADS-B poller there.
-    if not power.is_lower_cfg(cfg):
+    # Overhead radar only if a face still draws it. The daily board shows his
+    # next trip, not planes nearby, so it does not poll ADS-B.
+    if not power.is_lower_cfg(cfg) and not power.daily_home_cfg(cfg):
         start_sky()
-    else:
+    elif power.is_lower_cfg(cfg):
         print("[power] E1001 lower face: Fox + WSJ tech, favorite scores at game time", flush=True)
     if power.daily_home_cfg(cfg):
         print("[power] E1003 daily thirds (no sports) windows "
