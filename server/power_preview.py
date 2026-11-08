@@ -162,8 +162,49 @@ def ended(state, start, us, them, detail, opp, completed_at, source="espn"):
     return g
 
 
+# ESPN's own CDN marks, the same files the schedule's logo href points at.
+# A 404 leaves that side as the team name. These are not redrawn crests.
+_MARK = {
+    "jets": "https://a.espncdn.com/i/teamlogos/nfl/500/nyj.png",
+    "mets": "https://a.espncdn.com/i/teamlogos/mlb/500/nym.png",
+    "devils": "https://a.espncdn.com/i/teamlogos/nhl/500/nj.png",
+    "nets": "https://a.espncdn.com/i/teamlogos/nba/500/bkn.png",
+    "navy_fb": "https://a.espncdn.com/i/teamlogos/ncaa/500/2426.png",
+    "rutgers_bb": "https://a.espncdn.com/i/teamlogos/ncaa/500/164.png",
+}
+_OPP = {
+    "patriots": "https://a.espncdn.com/i/teamlogos/nfl/500/ne.png",
+    "ne": "https://a.espncdn.com/i/teamlogos/nfl/500/ne.png",
+    "rangers": "https://a.espncdn.com/i/teamlogos/nhl/500/nyr.png",
+    "braves": "https://a.espncdn.com/i/teamlogos/mlb/500/atl.png",
+    "army": "https://a.espncdn.com/i/teamlogos/ncaa/500/349.png",
+    "seton hall": "https://a.espncdn.com/i/teamlogos/ncaa/500/2550.png",
+    "bos": "https://a.espncdn.com/i/teamlogos/nba/500/bos.png",
+    "celtics": "https://a.espncdn.com/i/teamlogos/nba/500/bos.png",
+}
+
+
+def _attach_marks(rows):
+    import logos
+    urls = []
+    for row in rows:
+        our = _MARK.get(getattr(row, "key", ""), "")
+        if our:
+            row.logo = our
+        for g in (row.live, row.last, row.next):
+            if g is None:
+                continue
+            if our:
+                g.our_logo = our
+            opp = (getattr(g, "opp_name", "") or getattr(g, "opp", "") or "").lower()
+            g.opp_logo = _OPP.get(opp, "")
+            urls += [g.our_logo, g.opp_logo]
+    logos.prefetch([u for u in urls if u])
+
+
 def e1001_sports(path, now, rows, asof):
     R.set_profile("e1001")
+    _attach_marks(rows)
     ctx = R.Ctx(now=now, cfg={"layout": "lower", "cadence": "windows"},
                 battery=86, battery_age_s=40,
                 teams=rows, gallery={"asof": asof})
@@ -187,6 +228,10 @@ if __name__ == "__main__":
     sat = at(2026, 11, 7, 20, 5)
     e1001_sports(os.path.join(OUT, "e1001-lower-one-game.png"), sat, [
         lower_row("jets", live=game("in", sat - 4000, 17, 13, "Q3 6:02", "Patriots")),
+    ], sat - 900)
+    e1001_sports(os.path.join(OUT, "e1001-lower-two-games.png"), sat, [
+        lower_row("jets", live=game("in", sat - 4000, 17, 13, "Q3 6:02", "Patriots")),
+        lower_row("devils", live=game("in", sat - 2400, 2, 1, "2nd 8:11", "Rangers")),
     ], sat - 900)
     e1001_sports(os.path.join(OUT, "e1001-lower-sports.png"), sat, [
         lower_row("jets", live=game("in", sat - 5000, 17, 13, "Q3 6:02", "Patriots")),

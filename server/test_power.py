@@ -18,12 +18,24 @@ def _at(y, mo, d, h, mi=0):
 
 class G:
     def __init__(self, state, start, us=None, them=None, detail="", opp="OPP", home=True,
-                 status_name="", completed_at=None, completed_source="", event_id=""):
+                 status_name="", completed_at=None, completed_source="", event_id="",
+                 our_logo="", opp_logo=""):
         self.state, self.start = state, start
         self.us, self.them = us, them
         self.detail, self.opp, self.opp_name, self.home = detail, opp, opp, home
         self.status_name, self.event_id = status_name, event_id
         self.completed_at, self.completed_source = completed_at, completed_source
+        self.our_logo, self.opp_logo = our_logo, opp_logo
+
+
+def _seed_mark(url):
+    """A solid black square in the logo cache. Not a team crest."""
+    import logos
+    from PIL import Image
+    os.makedirs(logos.DIR, exist_ok=True)
+    Image.new("L", (64, 64), 0).save(logos._path(url))
+    with logos._lock:
+        logos._mem.clear()
 
 
 class Row:
@@ -248,6 +260,59 @@ class Paint(unittest.TestCase):
         self.assertEqual(wnames, power.DAILY_SLOTS)
         trip = wboxes[wnames.index("trips")]
         self.assertEqual(trip[2], R.W)  # Next Trip takes the old radar column too
+
+    def test_sports_face_scales_and_logos_are_optional(self):
+        R.set_profile("e1001")
+        one = lower.sports_metrics(1)
+        two = lower.sports_metrics(2)
+        many = lower.sports_metrics(3)
+        self.assertEqual(one["mode"], "hero")
+        self.assertEqual(two["mode"], "pair")
+        self.assertEqual(many["mode"], "row")
+        self.assertGreater(one["logo"], two["logo"])
+        self.assertGreater(two["logo"], many["logo"])
+        self.assertGreater(one["score"], two["score"])
+        self.assertGreater(two["score"], many["score"])
+        self.assertGreaterEqual(many["score"], 30)
+        self.assertGreaterEqual(many["logo"], 40)
+        now = _at(2026, 11, 7, 20)
+        us, them = "https://example.test/us-mark.png", "https://example.test/them-mark.png"
+        _seed_mark(us)
+        _seed_mark(them)
+        row = Row("jets", live=G("in", now - 1000, 17, 13, "Q3 6:02", "Patriots",
+                                 our_logo=us, opp_logo=them))
+        img = lower.compose(R.Ctx(now=now, cfg={"layout": "lower"}, teams=[row],
+                                  battery=86, battery_age_s=30, gallery={"asof": now - 60}))
+        box = lower.layout_for(1)["bands"][0]["us"]
+        self.assertLess(img.getpixel((box[0] + 2, box[1] + 2)), 40)
+        bare = Row("jets", live=G("in", now - 1000, 17, 13, "Q3 6:02", "Patriots"))
+        blank = lower.compose(R.Ctx(now=now, cfg={"layout": "lower"}, teams=[bare],
+                                    battery=86, battery_age_s=30, gallery={"asof": now - 60}))
+        self.assertGreater(blank.getpixel((box[0] + 2, box[1] + 2)), 200)
+        self.assertNotEqual(img.tobytes(), blank.tobytes())
+        # A missing file does not throw and does not invent a crest.
+        import logos
+        self.assertIsNone(logos.panel("https://example.test/not-cached.png", 48))
+        rows = [
+            Row("jets", live=G("in", now - 1000, 17, 13, "Q3", "Patriots", our_logo=us, opp_logo=them)),
+            Row("devils", live=G("in", now - 800, 2, 1, "2nd", "Rangers", our_logo=us, opp_logo=them)),
+        ]
+        pair = lower.compose(R.Ctx(now=now, cfg={"layout": "lower"}, teams=rows,
+                                   battery=40, battery_age_s=20, gallery={"asof": now - 60}))
+        self.assertEqual(pair.size, (800, 480))
+        for band in lower.layout_for(2)["bands"]:
+            x, y, _sz = band["us"]
+            self.assertLess(pair.getpixel((x + 2, y + 2)), 40)
+        low = lower.compose(R.Ctx(now=now, cfg={"layout": "lower"}, teams=rows,
+                                  battery=12, battery_age_s=20, gallery={"asof": now - 60}))
+        self.assertNotEqual(pair.tobytes(), low.tobytes())
+        three = [
+            rows[0], rows[1],
+            Row("nets", live=G("in", now - 600, 88, 80, "4th", "Celtics", our_logo=us, opp_logo=them)),
+        ]
+        grid = lower.compose(R.Ctx(now=now, cfg={"layout": "lower"}, teams=three, gallery={"asof": now - 60}))
+        self.assertEqual(lower.layout_for(3)["mode"], "row")
+        self.assertLess(grid.getpixel((14, lower.layout_for(3)["bands"][2]["us"][1] + 2)), 40)
 
     def test_one_game_fills_the_panel(self):
         R.set_profile("e1001")

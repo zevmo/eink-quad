@@ -560,6 +560,19 @@ class Board:
             except Exception:
                 traceback.print_exc()
                 self.snap.setdefault("teams", [])
+            if cfg.get("sports_logos", True):
+                urls = []
+                for r in self.snap.get("teams") or []:
+                    urls.append(getattr(r, "logo", "") or "")
+                    for g in (getattr(r, "live", None), getattr(r, "last", None), getattr(r, "next", None)):
+                        if not g:
+                            continue
+                        urls.append(getattr(g, "our_logo", "") or "")
+                        urls.append(getattr(g, "opp_logo", "") or "")
+                try:
+                    logos.prefetch(urls)
+                except Exception:
+                    traceback.print_exc()
         power.stamp_rows(self.snap.get("teams") or [], now, self.finals, lookup=S.final_wallclock)
         self._persist()
         bundle = self.snap.get("lower_news") or {}

@@ -48,6 +48,19 @@ def prefetch(urls):
             print(f"[logos] {url}: {e}", flush=True)
 
 
+def panel(url: str, size: int):
+    """1-bit logo for the E1001, or None if it is not on disk.
+
+    Hard threshold, no dither. Floyd-Steinberg speckle reads as dirt on this
+    panel. get() has already stretched the mark so ink is near black and the
+    field is paper. A miss is a miss: the score still draws from text.
+    """
+    img = get(url, size)
+    if img is None:
+        return None
+    return img.point(lambda v: 0 if v < 150 else 255)
+
+
 def get(url: str, size: int):
     """size x size "L" image (logo dark on white) or None."""
     if not url:
