@@ -81,14 +81,15 @@ def compose(ctx) -> "R.Image.Image":
     g = ctx.gallery or {}
     asof = g.get("asof") or 0
     face, shown = power.classify(ctx.teams or [], ctx.now)
+    batt = R.battery_caption(ctx.battery, getattr(ctx, "battery_age_s", None))
     if face == "sports" and shown:
-        _scores(c, d, shown, asof, ctx.now)
+        _scores(c, d, shown, asof, ctx.now, batt)
     else:
-        _news(c, d, g.get("fox") or [], g.get("tech") or [], asof, ctx.now)
+        _news(c, d, g.get("fox") or [], g.get("tech") or [], asof, ctx.now, batt)
     return c
 
 
-def _bar(d, w, title, asof, now):
+def _bar(d, w, title, asof, now, batt=""):
     d.rectangle((0, 0, w, 40), fill=R.INK)
     R.text(d, (14, 20), title, R.F("cb", 22), fill=R.PAPER, anchor="lm")
     t = time.localtime(now)
@@ -96,12 +97,14 @@ def _bar(d, w, title, asof, now):
     right = date
     if asof:
         right = f"as of {R.hm(asof)}  ·  {date}"
+    if batt:
+        right = f"{batt}   {right}"
     R.text(d, (w - 14, 20), right, R.F("m", 16), fill=R.PAPER, anchor="rm")
 
 
-def _news(c, d, fox, tech, asof, now):
+def _news(c, d, fox, tech, asof, now, batt=""):
     w, h = R.W, R.H
-    _bar(d, w, "NEWS", asof, now)
+    _bar(d, w, "NEWS", asof, now, batt)
     mid = w // 2
     d.line((mid, 52, mid, h - 36), fill=R.INK, width=2)
     _column(d, 16, mid - 8, "FOX NEWS", fox)
@@ -130,9 +133,9 @@ def _column(d, x, right, label, items):
         y += 22 * max(1, len(lines)) + 6
 
 
-def _scores(c, d, shown, asof, now):
+def _scores(c, d, shown, asof, now, batt=""):
     w, h = R.W, R.H
-    _bar(d, w, "SCORES", asof, now)
+    _bar(d, w, "SCORES", asof, now, batt)
     R.text(d, (16, 48), "Every 15 min while live  ·  not a live clock", R.F("cm", 16))
     d.line((12, 70, w - 12, 70), fill=R.INK, width=2)
     n = max(1, len(shown))

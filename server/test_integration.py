@@ -52,6 +52,22 @@ class Row:
         self.live, self.last, self.next = live, last, nxt
 
 
+def _reel_flags(body):
+    """Per-frame flag bytes. Bit0 = full refresh, bit1 = grey payload."""
+    assert body[:4] == b"REEL" and body[4] == 1
+    n = struct.unpack_from("<H", body, 5)[0]
+    off = 7
+    flags = []
+    for _ in range(n):
+        x0, y0, x1, y1, _delay = struct.unpack_from("<HHHHH", body, off)
+        fl = body[off + 10]
+        flags.append(fl)
+        off += 11 + ((x1 - x0) // 8) * (y1 - y0)
+        if fl & 2:
+            off += (x1 * y1) // 4
+    return flags
+
+
 def _reel_box(body):
     if body[:4] != b"REEL" or body[4] != 1:
         raise AssertionError(f"not a REEL ({body[:8]!r})")
@@ -396,8 +412,15 @@ class FramesAndNight(unittest.TestCase):
                 app.board.redraw("score", major=False)
         finally:
             lower.fetch_favorites, lower.fetch_news = old_s, old_n
-        self.assertNotEqual(app.board.final.tobytes(), blob)
+            self.assertNotEqual(app.board.final.tobytes(), blob)
         self.assertGreater(app.board.version, version)
+        # UC8179: the changed lower frame is a 1-bit full, not a fast partial
+        # and not a 4-grey full. The reel's first frame is the previous glass
+        # (flag 0); the update frame has bit0 set and the grey bit clear.
+        flags = _reel_flags(app.board.reel)
+        self.assertTrue(flags)
+        self.assertTrue(any(f & 1 for f in flags))
+        self.assertTrue(all((f & 2) == 0 for f in flags))
 
     def test_overnight_only_shabbat_edges(self):
         import power

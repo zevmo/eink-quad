@@ -158,6 +158,45 @@ class PowerPolicy(unittest.TestCase):
         self.assertTrue(power.held_final(late, now))
 
 
+class BatteryChrome(unittest.TestCase):
+    def test_caption_is_honest(self):
+        self.assertEqual(R.battery_caption(None, 5), "batt —")
+        self.assertEqual(R.battery_caption(None, None), "batt —")
+        self.assertEqual(R.battery_caption(93, 30), "93%")
+        self.assertEqual(R.battery_caption(12, 10), "12% low")
+        self.assertEqual(R.battery_caption(93, None), "93% old")
+        self.assertEqual(R.battery_caption(93, R.BATTERY_STALE_S + 1), "93% old")
+
+    def _differs(self, img_a, img_b):
+        self.assertNotEqual(img_a.tobytes(), img_b.tobytes())
+
+    def test_every_face_paints_its_own_reading(self):
+        now = _at(2026, 11, 8, 14, 45)
+        fresh = dict(battery=93, battery_age_s=20)
+        missing = dict(battery=None, battery_age_s=None)
+        stale = dict(battery=93, battery_age_s=R.BATTERY_STALE_S + 60)
+        low = dict(battery=12, battery_age_s=15)
+        # E1001 news and one-game sports.
+        R.set_profile("e1001")
+        news = dict(now=now, cfg={"layout": "lower"}, gallery={"asof": now - 60, "fox": [{"title": "Headline"}], "tech": []})
+        self._differs(lower.compose(R.Ctx(**news, **fresh)), lower.compose(R.Ctx(**news, **missing)))
+        self._differs(lower.compose(R.Ctx(**news, **fresh)), lower.compose(R.Ctx(**news, **stale)))
+        row = Row("jets", live=G("in", now - 500, 12, 14, "Halftime", "Chiefs"))
+        sport = dict(now=now, cfg={"layout": "lower"}, teams=[row], gallery={"asof": now - 60})
+        self._differs(lower.compose(R.Ctx(**sport, **fresh)), lower.compose(R.Ctx(**sport, **low)))
+        # E1003 weekday, Shabbat, and a detail page all use the shared header.
+        R.set_profile("e1003")
+        base = dict(now=now, cfg={"layout": "thirds", "daily_home": True})
+        wed = R.Ctx(**base, **fresh)
+        self._differs(R.header(wed), R.header(R.Ctx(**base, **missing)))
+        self._differs(R.header(wed), R.header(R.Ctx(**base, **stale)))
+        fri = dict(now=_at(2026, 11, 6, 12), cfg={"layout": "thirds", "daily_home": True})
+        self._differs(R.compose(R.Ctx(**fri, **fresh)), R.compose(R.Ctx(**fri, **missing)))
+        detail = R.Ctx(**base, **fresh, page="weather")
+        self._differs(R.compose(detail), R.compose(R.Ctx(**base, **missing, page="weather")))
+        R.set_profile("e1001")
+
+
 class Paint(unittest.TestCase):
     def test_markets_and_daily_slots(self):
         R.set_profile("e1003")

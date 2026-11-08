@@ -214,9 +214,17 @@ def full_every_min(c) -> int:
 
 
 def partials_preferred(c) -> bool:
-    """Ordinary updates stay partial. A full flash is the rare ghost clean,
-    a boot, or an explicit full-refresh."""
+    """Ordinary big-board updates stay partial. A full flash there is the rare
+    ghost clean, a boot, or an explicit full refresh."""
     return windows_on(c) or is_lower_cfg(c)
+
+
+def solid_black_full(c) -> bool:
+    """E1001 UC8179 fast partials leave large black type gray. The lower face
+    sends a 1-bit full (reel flag bit0, no grey payload) so display::full()
+    runs. That path is already in the firmware; it does not need a flash.
+    The E1003 TCON partial is a different driver and stays partial."""
+    return is_lower_cfg(c)
 
 
 def device_mode(vbat):

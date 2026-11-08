@@ -99,10 +99,11 @@ def e1003(path, now):
     # A live Jets game must NOT flip this board into a score layout.
     jet = lower_row("jets", live=game("in", now - 4000, 17, 10, "Q3 4:12", "NE"))
     ctx = R.Ctx(now=now, cfg=cfg, weather=weather(now), heads=heads(), quotes=quotes(),
+                battery=86, battery_age_s=40,
                 teams=[jet], league=[game("in", now - 4000, 17, 10, "Q3", "NE")],
                 shabbat=shabbat(now), calendar=calendar(now), trips=trips(now), shul=SHUL,
                 brief="Rain this afternoon, then a dry evening.",
-                indoor_f=68, indoor_rh=40, battery=72, updated=now - 600, day_count=4)
+                indoor_f=68, indoor_rh=40, updated=now - 600, day_count=4)
     g = R.compose_gray(ctx)
     assert g.size == (1872, 1404), g.size
     assert R.home_mode(ctx) == "daily"
@@ -146,6 +147,7 @@ def e1001_news(path, now):
         "Researchers publish a quieter fan design",
     )]
     ctx = R.Ctx(now=now, cfg={"layout": "lower", "cadence": "windows"},
+                battery=86, battery_age_s=40,
                 gallery={"asof": now - 2400, "fox": fox, "tech": tech})
     g = R.compose_gray(ctx)
     assert g.size == (800, 480), g.size
@@ -163,6 +165,7 @@ def ended(state, start, us, them, detail, opp, completed_at, source="espn"):
 def e1001_sports(path, now, rows, asof):
     R.set_profile("e1001")
     ctx = R.Ctx(now=now, cfg={"layout": "lower", "cadence": "windows"},
+                battery=86, battery_age_s=40,
                 teams=rows, gallery={"asof": asof})
     g = R.compose_gray(ctx)
     assert g.size == (800, 480)

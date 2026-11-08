@@ -447,6 +447,7 @@ class Ctx:
     indoor_f: float | None = None
     indoor_rh: float | None = None
     battery: int | None = None
+    battery_age_s: float | None = None   # seconds since this device last reported vbat
     on_usb: bool = True
     cycle: int = 0                # increments every scheduled update (rotations)
     updated: float = 0.0
@@ -1858,6 +1859,31 @@ CORNER_PANELS = [p for p in PANELS if p not in ("league", "navy")]          # sh
 
 # ================================================================== chrome
 
+# The reTerminal has no fuel gauge. lipo_percent() in app.py is Seeed's
+# resting-voltage table. A poll older than this is not a live reading.
+BATTERY_STALE_S = 20 * 60
+
+
+def battery_caption(pct, age_s) -> str:
+    """What the chrome prints for this device's own last voltage.
+
+    No percent: the board has not reported vbat (USB/dev, or never seen).
+    Older than BATTERY_STALE_S, or no timestamp: the number is stale.
+    20% and under, and fresh: marked low. Nothing here is a measured coulomb.
+    """
+    if pct is None:
+        return "batt —"
+    try:
+        n = int(pct)
+    except (TypeError, ValueError):
+        return "batt —"
+    if age_s is None or age_s > BATTERY_STALE_S:
+        return f"{n}% old"
+    if n <= 20:
+        return f"{n}% low"
+    return f"{n}%"
+
+
 def header(ctx: Ctx):
     c, d = canvas((W, HEAD_H))
     d.rectangle((0, 0, W, HEAD_H), fill=INK)
@@ -1871,13 +1897,13 @@ def header(ctx: Ctx):
     s = f"Updated {hm(ctx.updated or ctx.now)}"
     text(d, (x, HEAD_H / 2), s, f, fill=PAPER, anchor="rm")
     x -= tw(d, s, f)
+    # Always present, top-right. Missing and stale readings stay honest.
+    cap = battery_caption(ctx.battery, getattr(ctx, "battery_age_s", None))
+    x -= tw(d, sep, f)
+    text(d, (x, HEAD_H / 2), sep, f, fill=PAPER, anchor="lm")
+    x -= tw(d, cap, f)
+    text(d, (x, HEAD_H / 2), cap, f, fill=PAPER, anchor="lm")
     if ctx.battery is not None:
-        x -= tw(d, sep, f)
-        text(d, (x, HEAD_H / 2), sep, f, fill=PAPER, anchor="lm")
-        pct = f"{ctx.battery}%" + ("  plug me in" if ctx.battery <= 20 else "")
-        x -= tw(d, pct, f)
-        text(d, (x, HEAD_H / 2), pct, f, fill=PAPER, anchor="lm")
-        # battery glyph: outline, nub, fill proportional to charge
         bw, bh = 26, 13
         x -= bw + 9
         y0 = HEAD_H / 2 - bh / 2

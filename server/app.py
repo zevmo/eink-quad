@@ -442,6 +442,8 @@ class Board:
             gallery["asof"] = sn.get("lower_asof") or 0
             gallery["fox"] = news.get("fox") or []
             gallery["tech"] = news.get("tech") or []
+        seen = dv.get("last_seen") or 0
+        batt_age = (now - seen) if seen else None
         batt = lipo_percent(dv["vbat"]) if dv.get("vbat") else None
         t_f = dv.get("t")
         if t_f is not None and cfg.get("units") != "C":
@@ -454,6 +456,7 @@ class Board:
                      shopping=sn.get("shopping") or [], rot_step=self.rot_step,
                      gallery=gallery, gallery_offset=self.gallery_offset, brief=sn.get("brief", ""),
                      sticky=sticky, indoor_f=t_f, indoor_rh=dv.get("rh"), battery=batt,
+                     battery_age_s=batt_age,
                      on_usb=dv.get("mode") == "live", cycle=self.cycle, updated=self.updated or now,
                      page=page or self.page)
 
@@ -511,13 +514,19 @@ class Board:
             full = True
         if changed and power.is_gallery_legacy(cfg) and self.page == "quad":
             full = True
+        # UC8179 fast partials paint large black as gray (the washed E1001 glass).
+        # Flag bit0 without the grey bit is display::full(), already in the firmware.
+        if changed and power.solid_black_full(cfg):
+            full = True
         if not changed and not explicit_full:
             return
         if full:
             self.last_full = time.time()
             self.force_full = False
             self.partials = 0
-            if cfg.get("gray"):
+            # Lower board: 1-bit full, not the 4-grey full. Grey looks softer and
+            # the next partial would diff against a 1-bit buffer the glass isn't.
+            if cfg.get("gray") and not power.solid_black_full(cfg):
                 self._commit([(new, 0, True, R.compose_gray(self.ctx()))], why)
             else:
                 self._commit([(new, 0, True)], why)

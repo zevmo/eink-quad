@@ -96,6 +96,8 @@ The small E1001 shows Fox News and WSJ tech, hourly in the daytime. At game time
 
 Partials redraw only the regions that changed. A full flash is the occasional ghost clean, not every update.
 
+The charge line is each board's own last voltage, turned into a percent with Seeed's resting-voltage table (there is no fuel gauge, so it reads high while charging). No report shows as "batt —". A report older than 20 minutes shows "old". The small board's score updates are a full black-and-white refresh: the fast partial leaves large type gray on that panel.
+
 **Radio.** The firmware still chooses live vs sleep from `X-Mode`, and that rule was left alone: no battery reading, or about 3.80V and above, stays **live** and long-polls with Wi-Fi up. `X-Next` only matters in sleep, and it is still 600 seconds. Nothing here puts a charged board to sleep (that change was cancelled, and it would need a firmware flash). Less frequent paints cut how often a frame is sent; they do not by themselves make a charge last a week. That is not a claim.
 
 ## Notes
