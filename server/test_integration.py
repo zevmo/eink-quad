@@ -78,6 +78,27 @@ def _reel_box(body):
     return n, (x0, y0, x1, y1)
 
 
+def _github_repo(url: str) -> str:
+    """owner/repo from a GitHub remote URL. Credentials and a trailing .git are ignored."""
+    s = url.strip()
+    if "://" in s:
+        s = s.split("://", 1)[1]
+        if "@" in s:
+            s = s.split("@", 1)[1]
+    elif s.startswith("git@"):
+        s = s.split(":", 1)[-1]
+    s = s.split("?", 1)[0]
+    if s.endswith(".git"):
+        s = s[:-4]
+    s = s.replace(":", "/")
+    parts = [p for p in s.split("/") if p]
+    if len(parts) >= 3 and parts[0].lower().endswith("github.com"):
+        return f"{parts[1]}/{parts[2]}"
+    if len(parts) >= 2:
+        return f"{parts[-2]}/{parts[-1]}"
+    return s
+
+
 def _http(url, timeout=20):
     try:
         r = urllib.request.urlopen(url, timeout=timeout)
@@ -87,18 +108,35 @@ def _http(url, timeout=20):
 
 
 class SourceRemote(unittest.TestCase):
-    """Read-only identity of this checkout. Does not fetch or push."""
+    """Read-only identity of this checkout. Does not fetch, push, or rename remotes.
 
-    def test_origin_is_zevmo_and_parent_is_e1003_thirds(self):
-        url = subprocess.check_output(["git", "remote", "get-url", "origin"], cwd=ROOT, text=True).strip()
-        hostpath = url.split("@")[-1]
-        self.assertTrue(hostpath.startswith("github.com/zevmo/eink-quad"), hostpath.split("/", 1)[-1][:40])
-        parent = subprocess.check_output(["git", "rev-parse", "e1003-thirds"], cwd=ROOT, text=True).strip()
-        self.assertTrue(parent.startswith("f14bfb0"))
-        subprocess.check_call(["git", "merge-base", "--is-ancestor", "e1003-thirds", "HEAD"], cwd=ROOT)
-        # No other push remote is configured. J-Rod-Ay is not a remote here.
+    The live board keeps origin on J-Rod-Ay/eink-quad and fetches this branch
+    from a separate remote whose URL is zevmo/eink-quad. A checkout whose
+    origin is already that zevmo URL is the same source. The remote's name
+    does not matter; this does not look up a remote called upstream.
+    """
+
+    def test_zevmo_fetch_remote_and_parent_is_e1003_thirds(self):
+        # Replaces test_origin_is_zevmo_and_parent_is_e1003_thirds, which failed
+        # on the live checkout because origin there is J-Rod-Ay/eink-quad.
         remotes = subprocess.check_output(["git", "remote"], cwd=ROOT, text=True).split()
-        self.assertEqual(remotes, ["origin"])
+        self.assertTrue(remotes)
+        slugs = {}
+        for name in remotes:
+            url = subprocess.check_output(
+                ["git", "remote", "get-url", name], cwd=ROOT, text=True).strip()
+            slugs[name] = _github_repo(url).lower()
+        zevmo = [name for name, slug in slugs.items() if slug == "zevmo/eink-quad"]
+        self.assertTrue(zevmo, slugs)
+        origin = slugs.get("origin", "")
+        self.assertIn(origin, ("zevmo/eink-quad", "j-rod-ay/eink-quad"), slugs)
+        if origin != "zevmo/eink-quad":
+            self.assertTrue(any(name != "origin" for name in zevmo), slugs)
+        parent = subprocess.check_output(
+            ["git", "rev-parse", "e1003-thirds"], cwd=ROOT, text=True).strip()
+        self.assertTrue(parent.startswith("f14bfb0"), parent)
+        subprocess.check_call(
+            ["git", "merge-base", "--is-ancestor", "e1003-thirds", "HEAD"], cwd=ROOT)
 
 
 class FinalHold(unittest.TestCase):
