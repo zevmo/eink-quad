@@ -1459,11 +1459,14 @@ class H(BaseHTTPRequestHandler):
         wait = min(int(q.get("wait", "0") or 0), 30)
         vbat = float(q["vbat"]) if q.get("vbat") else None
         btn = q.get("btn")
-        # X-Mode is the firmware's existing rule. Forcing sleep whenever a
-        # battery voltage is reported was cancelled (it needs a flash, and it
-        # was rejected). While mode is live the radio long-polls; X-Next is
-        # ignored. Coarser windows cut paints and upstream polls, not that radio.
+        # Sleep between checks. X-Next is the 5-minute floor. The firmware
+        # aligns the wake to the unix boundary and ignores a shorter value,
+        # so the build already on the board (which still long-polls while
+        # X-Mode is live) is unchanged until it is flashed. Do not deploy
+        # this server ahead of that flash: the firmware already in the field
+        # will deep-sleep for whatever X-Next says.
         mode = power.device_mode(vbat)
+        slot = power.next_slot(time.time())
         dv = board.device
         dv.update(last_seen=time.time(), vbat=vbat, mode=mode, version=v,
                   rssi=int(q["rssi"]) if q.get("rssi") else dv.get("rssi"), polls=dv["polls"] + 1)
@@ -1506,6 +1509,7 @@ class H(BaseHTTPRequestHandler):
             headers = {
                 "X-Version": board.version, "X-Mode": mode,
                 "X-Next": power.device_next_s(mode),
+                "X-Slot": slot,
                 "X-Unread": int(board.unread),
                 "X-Chime": int(board.chime_version == board.version and v != board.version),
                 "X-Clean": 0,     # the server schedules full refreshes itself
@@ -1584,9 +1588,8 @@ def serve():
         print("[power] E1003 daily thirds (no sports) windows "
               + ", ".join(cfg.get("content_windows") or []), flush=True)
     print(f"quad board on {BIND}:{PORT} tz={os.environ['TZ']} notes={'on' if nb else 'off'}", flush=True)
-    print("[power] radio: X-Mode is unchanged (live while vbat is missing or >= 3.80V). "
-          "The firmware long-polls in live mode, so these windows do not sleep the radio "
-          "and a week per charge is not claimed.", flush=True)
+    print("[power] radio: X-Mode sleep, X-Next 300. Do not deploy this ahead of "
+          "firmware 5min-1. A week per charge is not claimed.", flush=True)
     threading.Thread(target=warm, daemon=True).start()
     Server((BIND, PORT), H).serve_forever()
 

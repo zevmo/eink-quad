@@ -13,10 +13,11 @@ is on or a final is still inside the hold window. Scores and headlines are
 hourly. An unchanged final does not change the content signature, so the
 glass is not redrawn just because the clock moved.
 
-This module does not put the radio to sleep. Firmware X-Mode is unchanged:
-a reported vbat >= 3.80V (or no vbat) stays "live" and long-polls. Forcing
-deep sleep on any battery reading was cancelled. Weekly runtime is not
-estimated here.
+The radio sleeps between checks. X-Mode is sleep on every poll, and X-Next
+is 300 seconds, which is the automatic floor. The firmware aligns that to
+the 5-minute unix boundary and will not honor a shorter interval, so a
+charged battery no longer keeps Wi-Fi up. A button is the exception and is
+not this interval. Weekly runtime is not estimated here.
 """
 from __future__ import annotations
 
@@ -227,23 +228,39 @@ def solid_black_full(c) -> bool:
     return is_lower_cfg(c)
 
 
-def device_mode(vbat):
-    """X-Mode. Unchanged on purpose.
+# Automatic checks are never closer than this. The firmware also refuses a
+# shorter X-Next, including the old live-mode 25-second long-poll.
+POLL_FLOOR_S = 300
 
-    live  — vbat missing, or >= 3.80V. Firmware keeps Wi-Fi up and long-polls.
-    sleep — reported vbat under 3.80V. Firmware deep-sleeps for X-Next (600s).
 
-    Forcing sleep on every battery reading was cancelled. Do not "fix" this
-    here; it would need a firmware flash the boards are not getting.
+def device_mode(vbat=None):
+    """X-Mode. Sleep on every poll.
+
+    vbat is still reported and still draws the battery line. It does not
+    decide whether the radio stays up. The firmware deep-sleeps, with Wi-Fi
+    off, until the next check. A button wakes it without waiting out the floor.
     """
-    return "live" if (vbat is None or vbat >= 3.80) else "sleep"
+    del vbat
+    return "sleep"
 
 
-def device_next_s(mode) -> int:
-    """X-Next. The firmware only sleeps on this when X-Mode is sleep.
-    Live mode ignores it and long-polls (about 25s). Not retargeted to the
-    content cadence — that was the cancelled deep-sleep change."""
-    return 600 if mode == "sleep" else 0
+def device_next_s(mode=None, now=None) -> int:
+    """X-Next. Always the 5-minute floor.
+
+    Not 0, not 25, and not the old 600. The firmware treats anything shorter
+    than this as 300, then shortens the actual sleep only enough to land on
+    the next 5-minute unix boundary. `mode` is accepted so older callers keep
+    working. A longer hint is not sent: the windows and the :15 sports marks
+    already sit on that grid, so sleeping longer would only make them late.
+    """
+    del mode, now
+    return POLL_FLOOR_S
+
+
+def next_slot(now) -> int:
+    """Unix time of the next 5-minute boundary strictly after `now`."""
+    now = int(now)
+    return now - (now % POLL_FLOOR_S) + POLL_FLOOR_S
 
 
 def selected_favorites(cfg) -> list[str]:

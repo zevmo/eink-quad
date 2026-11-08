@@ -98,7 +98,7 @@ Partials redraw only the regions that changed. A full flash is the occasional gh
 
 The charge line is each board's own last voltage, turned into a percent with Seeed's resting-voltage table (there is no fuel gauge, so it reads high while charging). No report shows as "batt —". A report older than 20 minutes shows "old". The small board's score updates are a full black-and-white refresh: the fast partial leaves large type gray on that panel.
 
-**Radio.** The firmware still chooses live vs sleep from `X-Mode`, and that rule was left alone: no battery reading, or about 3.80V and above, stays **live** and long-polls with Wi-Fi up. `X-Next` only matters in sleep, and it is still 600 seconds. Nothing here puts a charged board to sleep (that change was cancelled, and it would need a firmware flash). Less frequent paints cut how often a frame is sent; they do not by themselves make a charge last a week. That is not a claim.
+**Radio.** Firmware `5min-1` deep-sleeps between checks with Wi-Fi off. Automatic checks are never closer than 5 minutes, lined up on the 5-minute clock so 7:30, 12:30, 18:30, the hourly news, and the :00/:15/:30/:45 sports marks are not pushed to the next hour. A button wakes either board immediately and is not part of that floor. The E1003 touch pad does not wake it; the touch chip is held in reset while the processor sleeps. The server answers `X-Mode: sleep` and `X-Next: 300`. Do not put that server on the VM until this firmware is on the boards: the firmware already there still long-polls only while the server says live, and it will sleep if the server says sleep. Nothing here was measured on a full charge, and a week per charge is not a claim.
 
 ## Notes
 

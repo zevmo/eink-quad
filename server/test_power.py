@@ -56,14 +56,21 @@ class PowerPolicy(unittest.TestCase):
         self.assertNotIn("shopping", daily)
         self.assertIn("sports", app.nav_pages({"layout": "quad"}))
 
-    def test_device_mode_unchanged(self):
-        # Charged boards stay live. Forcing sleep on any vbat was cancelled.
-        self.assertEqual(power.device_mode(None), "live")
-        self.assertEqual(power.device_mode(3.80), "live")
-        self.assertEqual(power.device_mode(4.05), "live")
-        self.assertEqual(power.device_mode(3.79), "sleep")
-        self.assertEqual(power.device_next_s("live"), 0)
-        self.assertEqual(power.device_next_s("sleep"), 600)
+    def test_radio_floor_is_five_minutes(self):
+        # Voltage used to pick live vs sleep. It does not any more.
+        for v in (None, 3.79, 3.80, 4.05):
+            self.assertEqual(power.device_mode(v), "sleep")
+            self.assertGreaterEqual(power.device_next_s("sleep"), 300)
+            self.assertNotEqual(power.device_next_s("live"), 0)
+            self.assertNotEqual(power.device_next_s("live"), 25)
+            self.assertNotEqual(power.device_next_s("sleep"), 600)
+        self.assertEqual(power.device_next_s(), 300)
+        slot = 1_700_000_100
+        self.assertEqual(slot % 300, 0)
+        self.assertEqual(power.next_slot(slot), slot + 300)
+        self.assertEqual(power.next_slot(slot + 20), slot + 300)
+        self.assertEqual(power.next_slot(slot + 299), slot + 300)
+        self.assertEqual(power.next_slot(slot + 300), slot + 600)
 
     def test_quiet_union_and_windows(self):
         c = {"cadence": "windows", "layout": "thirds", "quiet": "0-6",
