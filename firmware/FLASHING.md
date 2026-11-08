@@ -18,10 +18,35 @@ Python server does not change what is on either chip. A future OTA client
 would be new work. This tree cannot tell whether some older binary on a
 board had one; the source here does not.
 
-`platformio.ini` names the platform file `default_8MB.csv`. That file is
-not in the repo, so this checkout does not list the partition offsets.
-Do not pass an erase. The project has no `read_flash` backup and no saved
-copy of the binary currently on either board.
+The partition file resolved from the installed Arduino package
+(`framework-arduinoespressif32/tools/partitions/default_8MB.csv`) is:
+
+| Name | Offset | Size |
+|---|---|---|
+| nvs | 0x9000 | 0x5000 |
+| otadata | 0xe000 | 0x2000 |
+| app0 | 0x10000 | 0x330000 |
+| app1 | 0x340000 | 0x330000 |
+| spiffs | 0x670000 | 0x180000 |
+| coredump | 0x7F0000 | 0x10000 |
+
+That map ends at 8 MiB. `platformio.ini` sets `board_upload.flash_size` to
+32MB, and the built bootloader and app headers say 32MB. The XIAO board
+JSON's own default is 8MB; the ini override wins. The top 24MB is not in
+the table. A normal esptool `write-flash` of the app starts at 0x10000 and
+does not cover the NVS at 0x9000. `erase_flash` does, and it is not
+approved. The `app1` slot does not make this firmware able to take an OTA
+update. Nothing calls the OTA API.
+
+Before any future USB write, and only with the board in front of you, save
+the mapped 8MB and keep that file. This was not run here:
+
+```sh
+esptool --chip esp32s3 --port PORT read-flash 0x0 0x800000 board-backup.bin
+```
+
+Putting that file back is `write-flash 0x0 board-backup.bin`. Do not erase
+first. There is still no copy of the binary that is on either board today.
 
 Wi-Fi name and password live in NVS under the namespace `einknotes`
 (`firmware/src/wifisetup.cpp`). The server host and device token are
@@ -51,9 +76,10 @@ pio run -e quad -t upload --upload-port COMn
 while `quad` stays the first env. `README.md` shows `COM9`.
 `serial.ps1` defaults to `COM8` and only listens; it does not write flash.
 
-Build, without writing the chip: `pio run -e quad`. The image is under
-`.pio/build/quad/`. This cloud checkout has not produced that image yet
-when `FLASHING.md` was added.
+Build, without writing the chip: `pio run -e quad`. A dummy build of
+`5min-1` exists only as a compile check. Its host is
+`invalid.example.invalid` and its token is `dummy-not-a-real-token`.
+Do not install that file.
 
 ## Large board, E1003
 
@@ -65,10 +91,15 @@ Evidence: `E1003.md` "Build / flash", env `quad-e1003` in
   E1001's CH340.
 - On macOS the documented driver is WCH's CH343SER, and the port is
   `/dev/cu.wchusbserial*`.
-- If upload will not start, `E1003.md` says hold KEY0/BOOT while plugging
-  in. That sentence is only in the E1003 section. KEY0 in `board.h` is
-  GPIO3 on both boards. GPIO0 is the ESP32-S3 strap pin. The doc names
-  them together; this file does not add a second combo.
+- Do not hold the green refresh button to enter the bootloader. Seeed's
+  Arduino cookbook maps KEY0 to GPIO3, the right-hand green button, on
+  E1001, E1002, and E1003. The Zephyr board file for the E1003 lists that
+  same GPIO3 refresh key and no button on GPIO0. ESP32-S3 download mode
+  is GPIO0 held low at reset, which is a different pin. `E1003.md` says
+  "hold KEY0/BOOT" if upload will not start. That sentence mixes the two.
+  Holding the green button does not pull the strap pin, and this repo
+  does not document a separate boot button. If esptool cannot reset the
+  chip on its own, stop. Do not invent a hold.
 - From `firmware/`:
 
 ```sh
@@ -76,6 +107,9 @@ pio run -e quad-e1003                 # build only
 pio run -e quad-e1003 -t upload --upload-port /dev/cu.wchusbserialXXXX
 pio device monitor -b 115200
 ```
+
+The matching dummy image is `.pio/build/quad-e1003/firmware.bin`. Same
+rule: it is not installable. The two partition tables are identical.
 
 ## Both
 
