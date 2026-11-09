@@ -286,7 +286,8 @@ def _footer(d, w, h, mode, now, credit=""):
             d.ellipse((x, y + 13 - r, x + 2 * r, y + 13 + r), outline=R.INK, width=2)
         x += 20
     R.text(d, (x + 6, y + 13), NAMES[mode], R.F("cb", 17), anchor="lm")
-    R.text(d, (w - 14, y + 13), time.strftime("%a %b %-d · %-I:%M %p", time.localtime(now)), R.F("cm", 17), anchor="rm")
+    clock = time.strftime("%a %b %-d · %-I:%M %p", time.localtime(now))
+    R.text(d, (w - 14, y + 13), clock, R.F("cm", 17), anchor="rm")
     if credit:
         R.text(d, (w // 2 + 70, y + 13), R.ellipsize(d, credit, R.F("cr", 14), 250), R.F("cr", 14), anchor="mm")
 
@@ -586,16 +587,27 @@ def compose(ctx, size=None):
     mode = pick_mode(data, ctx.teams, ctx.now, ctx.cfg, getattr(ctx, "gallery_offset", 0),
                      ctx.weather, ctx.trips, ctx.calendar)
     if mode == "matchup":
-        return render_matchup(data, ctx.teams, ctx.now, size)
-    if mode == "weather":
-        return render_weather(ctx.weather, ctx.now, size)
-    if mode == "trip":
-        return render_trip(ctx.trips, ctx.calendar, ctx.now, size)
-    if mode == "news":
-        return render_news(data, ctx.now, size)
-    if mode == "wire":
-        return render_wire(data, ctx.now, size)
-    return render_onthisday(data, ctx.now, size)
+        img = render_matchup(data, ctx.teams, ctx.now, size)
+    elif mode == "weather":
+        img = render_weather(ctx.weather, ctx.now, size)
+    elif mode == "trip":
+        img = render_trip(ctx.trips, ctx.calendar, ctx.now, size)
+    elif mode == "news":
+        img = render_news(data, ctx.now, size)
+    elif mode == "wire":
+        img = render_wire(data, ctx.now, size)
+    else:
+        img = render_onthisday(data, ctx.now, size)
+    # Same honest caption as the other faces, top-right, on a paper chip so a
+    # photo underneath cannot hide it.
+    cap = R.battery_caption(getattr(ctx, "battery", None), getattr(ctx, "battery_age_s", None))
+    d = ImageDraw.Draw(img)
+    f = R.F("cb", 16)
+    tw = d.textlength(cap, font=f)
+    d.rectangle((size[0] - tw - 22, 6, size[0] - 6, 30), fill=R.PAPER)
+    d.rectangle((size[0] - tw - 22, 6, size[0] - 6, 30), outline=R.INK, width=1)
+    R.text(d, (size[0] - 12, 18), cap, f, anchor="rm")
+    return img
 
 
 def compose_gray(ctx):

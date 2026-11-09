@@ -88,6 +88,18 @@ On first boot the board opens a Wi-Fi setup portal named `QuadBoard-XXXX`. Join 
 
 `firmware/serial.ps1 -Port COM9` resets the board and prints its boot log.
 
+## Two fridge boards
+
+The big E1003 keeps one daily face and does not rotate or take a sports or Sunday NFL layout: Shabbat times, the newsletter, weather, news, and his next trip. There is no calendar tile and no overhead-plane radar. On Friday and Saturday the newsletter takes most of the screen; weather and Shabbat times stay, and stock quotes stay off. Those panels refresh around **7:30, 12:30 and 18:30** America/New_York, and also at candle lighting, havdalah, and the Friday/Sunday market change. **22:00–07:00** stays quiet.
+
+The small E1001 shows Fox News and WSJ tech, hourly in the daytime. At game time it switches to Jets, Mets, Devils, Nets, Navy football, and Rutgers basketball only. One game fills the screen, with each club's real mark and a large score. Two or more shrink into smaller panels so they all fit. Marks come from the ESPN logo the schedule already carries; if a file is missing, the name and score still draw. A favorite that is actually playing updates about every **15 minutes**, with an **as of** time that moves only when the score or the headlines change. Finals stay up for six hours after ESPN's last play (overtime included), saved in `state.json`. If that timestamp is missing, the clock starts when the final is first seen and is not moved later. An unchanged final does not redraw. It does not show Shabbat, the newsletter, or a shop tile.
+
+Partials redraw only the regions that changed. A full flash is the occasional ghost clean, not every update.
+
+The charge line is each board's own last voltage, turned into a percent with Seeed's resting-voltage table (there is no fuel gauge, so it reads high while charging). No report shows as "batt —". A report older than 20 minutes shows "old". The small board's score updates are a full black-and-white refresh: the fast partial leaves large type gray on that panel.
+
+**Radio.** Firmware `5min-1` deep-sleeps between checks with Wi-Fi off. Automatic checks are never closer than 5 minutes, lined up on the 5-minute clock so 7:30, 12:30, 18:30, the hourly news, and the :00/:15/:30/:45 sports marks are not pushed to the next hour. A button wakes either board immediately and is not part of that floor. The E1003 touch pad does not wake it; the touch chip is held in reset while the processor sleeps. The server answers `X-Mode: sleep` and `X-Next: 300`. Do not put that server on the VM until this firmware is on the boards: the firmware already there still long-polls only while the server says live, and it will sleep if the server says sleep. Nothing here was measured on a full charge, and a week per charge is not a claim.
+
 ## Notes
 
 - Times use the server's `TZ` (defaults to `America/New_York`).

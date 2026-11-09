@@ -2,39 +2,40 @@
 // and play whatever the server sends. The server renders every pixel, including animation, as a "reel" of
 // changed rectangles; this firmware only copies bytes and picks refresh modes.
 //
-// Two ways of living, chosen by the server per request (X-Mode):
-//   live  -- on USB: WiFi stays up, long-polls, buttons answer instantly,
-//            Inky gets idle animations.
-//   sleep -- on battery: deep sleep between checks, any button wakes it.
+// The radio is off between checks. After one poll the MCU deep-sleeps until
+// the next 5-minute boundary (see sleep_policy.h). A button wakes it sooner.
+// An old server that still sends X-Mode live / X-Next 0 does not bring back
+// the 25-second long-poll. The E1003 touch controller is held in reset
+// during that sleep, so a tap does not wake the chip; the three buttons do.
 
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <driver/rtc_io.h>
+#include <time.h>
 
 #include "board.h"
 #include "display.h"
 #include "secrets.h"
 #include "sensors.h"
+#include "sleep_policy.h"
 #include "touch.h"
 #include "wifisetup.h"
 
 RTC_DATA_ATTR static uint32_t rtcVersion = 0;   // what the glass shows, per the server
 RTC_DATA_ATTR static uint32_t bootCount = 0;
 RTC_DATA_ATTR static uint8_t failures = 0;
+RTC_DATA_ATTR static int64_t rtcLastAuto = 0;  // unix start of the last automatic wake
 
-static const uint32_t POLL_WAIT_S = 25;
 static const uint32_t WIFI_TIMEOUT_MS = 20000;
 static const uint32_t PORTAL_IDLE_MS = 10UL * 60UL * 1000UL;
 static const size_t MAX_REEL = 3 * 1024 * 1024;
 
 static bool bufferValid = false;   // does display::buffer() match the glass?
 static uint32_t partialsSinceFull = 0;
-static uint32_t lastPartialMs = 0;
-static uint32_t cleanAfterS = 90;
 static bool unread = false;
-static bool liveMode = true;
-static uint32_t nextSleepS = 300;
+static uint32_t serverNext = 0;
+static int thisWakeWasAuto = 1;
 
 static uint8_t *reel = nullptr;
 
@@ -184,7 +185,6 @@ static bool playReel(const uint8_t *r, size_t len, bool baseIsGlass) {
       } else {
         display::partial(x0, y0, x1, y1);
         partialsSinceFull++;
-        lastPartialMs = millis();
       }
       Serial.printf("[reel] %u/%u %ux%u %s %lums\n", i + 1, n, x1 - x0, y1 - y0,
                     (flags & 1) ? "full" : "part", millis() - t0);
@@ -253,8 +253,8 @@ static Resp poll(uint32_t waitS, int8_t btn, bool boot, bool abortable,
   else if (tx >= 0 && ty >= 0) n += snprintf(path + n, sizeof(path) - n, "&tx=%d&ty=%d", tx, ty);
   if (!bufferValid) n += snprintf(path + n, sizeof(path) - n, "&fresh=1");
 
-  tls.printf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: quadboard\r\nConnection: keep-alive\r\n\r\n",
-             path, NOTE_HOST);
+  tls.printf("GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: quadboard/%s\r\nConnection: keep-alive\r\n\r\n",
+             path, NOTE_HOST, QUAD_FW);
 
   // wait for the first byte (this is where the long-poll sits)
   uint32_t deadline = millis() + (waitS + 20) * 1000;
@@ -334,10 +334,21 @@ static Resp poll(uint32_t waitS, int8_t btn, bool boot, bool abortable,
 
 // ---------------------------------------------------------------- main
 
+static void noteClock() {
+  configTime(0, 0, "pool.ntp.org");
+  if (time(nullptr) >= QUAD_TIME_VALID) return;
+  uint32_t t0 = millis();
+  while (millis() - t0 < 2000 && time(nullptr) < QUAD_TIME_VALID) delay(50);
+}
+
+static uint32_t planSleep() {
+  // Floor lives in the firmware. X-Mode live from the deployed server is not
+  // permission to keep Wi-Fi up. A short X-Next (0 or 25) is ignored.
+  return quad_sleep_seconds(time(nullptr), rtcLastAuto, serverNext, thisWakeWasAuto);
+}
+
 static void handle(const Resp &r) {
-  if (r.mode.length()) liveMode = (r.mode == "live");
-  if (r.next) nextSleepS = r.next;
-  cleanAfterS = r.clean;
+  if (r.next) serverNext = r.next;
   unread = r.unread;
   if (r.code == 200 && r.len) {
     if (r.chime) chime();
@@ -355,7 +366,8 @@ void setup() {
   bootCount++;
   Serial.begin(115200);
   delay(bootCount == 1 ? 800 : 50);
-  Serial.printf("\n=== quad board boot #%u (%s) ===\n", bootCount, FW_BUILD);
+  Serial.printf("\n=== quad board boot #%u (%s) fw=%s model=%s ===\n",
+                bootCount, FW_BUILD, QUAD_FW, QUAD_MODEL);
 
   pinMode(LED_PIN, OUTPUT);
   led(true);
@@ -364,8 +376,10 @@ void setup() {
     pinMode(p, INPUT_PULLUP);
   }
 
+  esp_sleep_wakeup_cause_t why = esp_sleep_get_wakeup_cause();
+  thisWakeWasAuto = (why != ESP_SLEEP_WAKEUP_EXT1);
   // which button woke us (deep sleep), if any
-  if (esp_sleep_get_wakeup_cause() == ESP_SLEEP_WAKEUP_EXT1) {
+  if (why == ESP_SLEEP_WAKEUP_EXT1) {
     uint64_t st = esp_sleep_get_ext1_wakeup_status();
     if (st & (1ULL << KEY0_PIN)) pendingBtn = 0;
     else if (st & (1ULL << KEY1_PIN)) pendingBtn = 1;
@@ -404,10 +418,13 @@ void setup() {
     }
     failures++;
     if (failures == 6) enterPortal("1. On your phone, join this Wi-Fi network:");
-    sleepNow(min(60u << min<uint8_t>(failures, 5), 3600u));
+    sleepNow(quad_fail_sleep(failures));
   }
   if (wifisetup::isFresh()) wifisetup::clearFresh();
   failures = 0;
+  noteClock();
+  if (thisWakeWasAuto && time(nullptr) >= QUAD_TIME_VALID)
+    rtcLastAuto = time(nullptr);
 
   attachInterrupt(KEY0_PIN, isr0, FALLING);
   attachInterrupt(KEY1_PIN, isr1, FALLING);
@@ -419,42 +436,29 @@ void setup() {
   int8_t b = takeBtn();
   if (b >= 0) blip();
   Resp r = poll(0, b, boot, false);
-  handle(r);
   if (r.code == 0) {
     Serial.println("[http] first poll failed");
-    if (!liveMode) sleepNow(120);
+    failures++;
+  } else {
+    failures = 0;
+    handle(r);
   }
 }
 
 void loop() {
-  if (!liveMode) {
-    // battery: one more quick look for queued work, then sleep
-    sleepNow(nextSleepS);
-  }
-
+  // A press that landed while the first poll was in flight gets one immediate
+  // check. That is the manual exception to the 5-minute floor. Then the radio
+  // goes off. There is no 25-second long-poll.
   touch::poll();
   int8_t b = takeBtn();
   int16_t tx = -1, ty = -1;
-  if (b < 0 && touch::take(&tx, &ty)) blip();   // never send btn and tap together
+  if (b < 0 && touch::take(&tx, &ty)) blip();
   if (b >= 0) blip();
-  bool urgent = b >= 0 || tx >= 0;
-  Resp r = poll(urgent ? 0 : POLL_WAIT_S, b, false, !urgent, tx, ty);
-  if (r.aborted) return;   // a button/tap arrived mid-wait; loop re-polls with it
-  if (r.code == 0) {
-    failures++;
-    delay(min(2000u * failures, 30000u));
-    if (WiFi.status() != WL_CONNECTED) wifisetup::connect(WIFI_TIMEOUT_MS);
-    return;
+  if (b >= 0 || tx >= 0) {
+    Resp r = poll(0, b, false, false, tx, ty);
+    if (r.code == 0) failures++;
+    else { failures = 0; handle(r); }
   }
-  failures = 0;
-  handle(r);
-
-  // After an animation, e-paper partials leave faint ghosts. Once things have
-  // been still for a while, one full refresh wipes them.
-  if (cleanAfterS && partialsSinceFull >= 10 && pendingBtn < 0 && !touch::pending() &&
-      millis() - lastPartialMs > cleanAfterS * 1000UL) {
-    Serial.println("[epd] ghost-clean full refresh");
-    display::full();
-    partialsSinceFull = 0;
-  }
+  uint32_t sec = failures ? quad_fail_sleep(failures) : planSleep();
+  sleepNow(sec);
 }

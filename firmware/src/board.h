@@ -68,6 +68,9 @@
 
 #define BUZZER_PIN  45
 
+// Radio build. Printed at boot and sent as the HTTP user agent. Not a secret.
+#define QUAD_FW "5min-1"
+
 #define I2C_SDA_PIN 19
 #define I2C_SCL_PIN 20
 #define SHT4X_ADDR  0x44
