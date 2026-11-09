@@ -518,6 +518,11 @@ class Board:
         # Flag bit0 without the grey bit is display::full(), already in the firmware.
         if changed and power.solid_black_full(cfg):
             full = True
+        # E1003 sleeps between checks, so the TCON no longer has the old
+        # image. A partial (reel flag bit0 clear) ghosts the new page onto
+        # the old one. This is a 4-grey full, not the E1001 1-bit path.
+        if changed and power.windows_on(cfg):
+            full = True
         if not changed and not explicit_full:
             return
         if full:

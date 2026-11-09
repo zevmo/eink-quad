@@ -458,6 +458,41 @@ class FramesAndNight(unittest.TestCase):
         self.assertTrue(any(f & 1 for f in flags))
         self.assertTrue(all((f & 2) == 0 for f in flags))
 
+    def test_e1003_windows_and_button_are_grey_full(self):
+        import app
+        import power
+        R = self.R
+        R.set_profile("e1003")
+        if app.board.final.size != (R.PW, R.PH):
+            app.board.final = __import__("PIL").Image.new("1", (R.PW, R.PH), 1)
+        self._use(layout="thirds", daily_home=True, cadence="windows", gray=True, crisp=False)
+        page = app.board.page
+        app.board.page = "quad"
+        app.board.snap = {"heads": [], "quotes": [], "teams": [], "shopping": []}
+        try:
+            with app.board.cond:
+                app.board.redraw("startup", full=True)
+            # A scheduled window is not passed full=True. The body still changes.
+            app.board.page = "weather"
+            with app.board.cond:
+                app.board.redraw("scheduled window", major=False)
+            flags = _reel_flags(app.board.reel)
+            self.assertTrue(any(f & 1 for f in flags), flags)
+            self.assertTrue(any(f & 2 for f in flags), flags)
+            # Button page switch is the same path the 12:12 overlay used.
+            version = app.board.version
+            app.board.button(2)
+            self.assertGreater(app.board.version, version)
+            flags = _reel_flags(app.board.reel)
+            self.assertTrue(any(f & 1 for f in flags), flags)
+            self.assertTrue(any(f & 2 for f in flags), flags)
+            # Sleep floor is untouched.
+            self.assertEqual(power.device_next_s(), 300)
+            self.assertEqual(power.device_mode(4.0), "sleep")
+        finally:
+            app.board.page = page
+            R.set_profile("e1001")
+
     def test_overnight_only_shabbat_edges(self):
         import power
         app = self.app
